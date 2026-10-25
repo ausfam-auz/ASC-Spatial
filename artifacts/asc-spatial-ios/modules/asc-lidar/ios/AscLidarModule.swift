@@ -16,8 +16,25 @@ private struct PlyMesh {
   let decimationFactor: Int
 }
 
-public final class AscLidarModule: Module, ARSessionDelegate {
+private final class AscLidarSessionDelegate: NSObject, ARSessionDelegate {
+  var onAnchorsChanged: (([ARAnchor], [UUID]) -> Void)?
+
+  func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+    onAnchorsChanged?(anchors, [])
+  }
+
+  func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+    onAnchorsChanged?(anchors, [])
+  }
+
+  func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+    onAnchorsChanged?([], anchors.map(\.identifier))
+  }
+}
+
+public final class AscLidarModule: Module {
   private let session = ARSession()
+  private let sessionDelegate = AscLidarSessionDelegate()
   private let delegateQueue = DispatchQueue(label: "com.ascspatial.lidar.session")
   private let stateLock = NSLock()
   private let maximumTriangleCount = 1_000_000
@@ -104,25 +121,17 @@ public final class AscLidarModule: Module, ARSessionDelegate {
   }
 
   public override func didCreate() {
-    session.delegate = self
+    sessionDelegate.onAnchorsChanged = { [weak self] incoming, removed in
+      self?.updateMeshAnchors(incoming, removed: removed)
+    }
+    session.delegate = sessionDelegate
     session.delegateQueue = delegateQueue
   }
 
   public override func willDestroy() {
     cancelCapture()
     session.delegate = nil
-  }
-
-  public func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
-    updateMeshAnchors(anchors, removed: [])
-  }
-
-  public func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
-    updateMeshAnchors(anchors, removed: [])
-  }
-
-  public func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
-    updateMeshAnchors([], removed: anchors.map(\.identifier))
+    sessionDelegate.onAnchorsChanged = nil
   }
 
   private func deviceStatus() -> [String: Any] {
