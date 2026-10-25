@@ -25,6 +25,7 @@ import {
   Radio,
   RefreshCw,
   ShieldCheck,
+  Smartphone,
   Upload,
   Wifi,
   WifiOff,
@@ -101,6 +102,10 @@ function formatDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'Date unavailable';
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
+function moduleLabel(moduleType: 'DeckOps' | 'ToolingAudit') {
+  return moduleType === 'ToolingAudit' ? 'Tooling Audit' : 'DeckOps';
 }
 
 function errorMessage(error: unknown) {
@@ -333,6 +338,39 @@ function ScanWorkspace({ user, onLogout }: { user: AuthUser; onLogout: () => voi
           </div>
         </div>
 
+        <section
+          aria-labelledby="native-scan-heading"
+          className="mb-6 flex flex-col gap-4 rounded-2xl border border-[#d4dfd7] bg-[#eef4ee] p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5"
+        >
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-[#527665]">
+              <Smartphone size={19} aria-hidden="true" />
+            </div>
+            <div>
+              <h2 id="native-scan-heading" className="text-sm font-semibold text-[#35474e]">
+                Need to capture a new LiDAR scan?
+              </h2>
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-[#68777a]">
+                Safari can’t access the iPhone or iPad LiDAR scanner. Open the
+                ASC Spatial iOS app to capture a scan. This page is for uploading
+                existing .PLY or .OBJ files.
+              </p>
+              <p className="mt-1 text-[11px] leading-4 text-[#818b8e]">
+                If the app doesn’t open, it needs to be installed as a signed iOS
+                app first.
+              </p>
+            </div>
+          </div>
+          <a
+            href="asc-spatial-ios://"
+            aria-label="Open ASC Spatial iOS app for LiDAR scanning"
+            className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#263740] px-4 py-2.5 text-sm font-semibold text-[#faf8f1] transition hover:bg-[#344b54] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#527665] focus-visible:ring-offset-2"
+          >
+            <Smartphone size={16} aria-hidden="true" />
+            Open ASC Spatial app
+          </a>
+        </section>
+
         <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.12fr)_minmax(400px,.88fr)]">
           <section className="overflow-hidden rounded-2xl border border-[#d9ddd9] bg-[#fbfaf6] shadow-[0_10px_32px_rgba(38,55,64,.035)]">
             <div className="flex items-center justify-between border-b border-[#e4e5df] px-6 py-5">
@@ -344,15 +382,16 @@ function ScanWorkspace({ user, onLogout }: { user: AuthUser; onLogout: () => voi
             </div>
             <form onSubmit={submit} className="space-y-5 p-6">
               <div>
-                <label htmlFor="module-type" className="mb-2 block text-xs font-semibold text-[#4b5b61]">Inspection module</label>
+                <label htmlFor="module-type" className="mb-2 block text-xs font-semibold text-[#4b5b61]">Record category</label>
                 <div className="grid grid-cols-2 gap-2">
                   {(['DeckOps', 'ToolingAudit'] as const).map((module) => (
                     <button type="button" key={module} onClick={() => setModuleType(module)} data-testid={`button-module-${module.toLowerCase()}`} className={`flex min-h-[48px] items-center justify-between rounded-lg border px-3.5 text-left text-sm transition ${moduleType === module ? 'border-[#b77f4e] bg-[#f6eee3] font-semibold text-[#6d4c31]' : 'border-[#dfe2dc] bg-[#faf9f5] text-[#6c787c] hover:border-[#b8c2bd]'}`}>
-                      {module === 'DeckOps' ? 'DeckOps' : 'ToolingAudit'}
+                      {moduleLabel(module)}
                       {moduleType === module && <Check size={15} />}
                     </button>
                   ))}
                 </div>
+                <p className="mt-2 text-[11px] leading-5 text-[#849092]">This labels the record only. It does not change scan detail or accuracy.</p>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
@@ -444,7 +483,7 @@ function ScanWorkspace({ user, onLogout }: { user: AuthUser; onLogout: () => voi
                       <div className="min-w-0 flex-1">
                         <div data-testid={`text-scan-asset-${scan.id}`} className="truncate text-sm font-semibold text-[#3d5058]">{scan.vesselAssetName}</div>
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-[#889294]">
-                          <span className="font-mono">{scan.moduleType}</span><span className="text-[#c1c7c2]">·</span><span className="truncate">{scan.fileName}</span>
+                          <span className="font-mono">{moduleLabel(scan.moduleType)}</span><span className="text-[#c1c7c2]">·</span><span className="truncate">{scan.fileName}</span>
                         </div>
                         <div className="mt-1.5 flex items-center gap-2 font-mono text-[9px] text-[#9aa2a0]">
                           <span>{formatDate(scan.timestamp)}</span><span>·</span><span>{formatSize(scan.fileSize)}</span>

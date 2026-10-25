@@ -77,6 +77,10 @@ function scanExtension(name: string): string {
   return name.split('.').pop()?.toLowerCase() ?? '';
 }
 
+function moduleLabel(moduleType: ModuleType): string {
+  return moduleType === 'ToolingAudit' ? 'Tooling Audit' : 'DeckOps';
+}
+
 function uploadQueueStatusLabel(item: ScanUploadQueueItem): string {
   switch (item.state) {
     case 'uploading':
@@ -122,7 +126,7 @@ function ScanRecord({
           {scan.vesselAssetName}
         </Text>
         <Text style={styles.recordMeta} numberOfLines={1}>
-          {scan.moduleType} · {readableDate(scan.timestamp)}
+          {moduleLabel(scan.moduleType)} · {readableDate(scan.timestamp)}
         </Text>
       </View>
       <View style={styles.recordFile}>
@@ -773,6 +777,96 @@ export default function ScanWorkspaceScreen() {
     );
   }
 
+  if (capturePhase === 'capturing') {
+    const progressPercent = Math.round(captureProgress * 100);
+    return (
+      <View
+        style={[
+          styles.captureFullscreen,
+          {
+            paddingTop: topInset + 8,
+            paddingBottom: bottomInset + 10,
+          },
+        ]}
+      >
+        <View style={styles.captureFullscreenHeader}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Cancel capture"
+            testID="cancel-lidar-capture"
+            onPress={cancelLidarCapture}
+            style={({ pressed }) => [
+              styles.captureFullscreenCancel,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Feather name="x" size={17} color={colors.foreground} />
+            <Text style={styles.captureFullscreenCancelText}>Cancel</Text>
+          </Pressable>
+          <View style={styles.captureFullscreenLive}>
+            <View style={styles.lidarPreviewLiveDot} />
+            <Text style={styles.captureFullscreenLiveText}>LIVE SCAN</Text>
+          </View>
+          <Text style={styles.captureFullscreenSurfaceCount}>
+            {captureMeshCount} surfaces
+          </Text>
+        </View>
+
+        <View
+          style={styles.captureFullscreenPreview}
+          testID="lidar-fullscreen-preview"
+        >
+          <LidarPreview style={StyleSheet.absoluteFill} />
+          <View pointerEvents="none" style={styles.captureFullscreenHud}>
+            <View style={styles.lidarPreviewBadge}>
+              <Text style={styles.lidarPreviewBadgeText}>
+                GREEN MESH · CAPTURED AREA
+              </Text>
+            </View>
+            <Text style={styles.captureFullscreenHint}>
+              Move slowly around the object to capture the surfaces you need.
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.captureFullscreenControls}>
+          <View style={styles.captureFullscreenProgressLabel}>
+            <Text style={styles.captureFullscreenProgressTitle}>
+              Scan coverage
+            </Text>
+            <Text style={styles.captureFullscreenProgressValue}>
+              {progressPercent}%
+            </Text>
+          </View>
+          <View style={styles.captureProgressTrack}>
+            <View
+              style={[
+                styles.captureProgressFill,
+                { width: `${progressPercent}%` },
+              ]}
+            />
+          </View>
+          <Text style={styles.captureProgressText}>
+            {captureMeshCount} mesh areas found · move slowly
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            testID="finish-lidar-capture"
+            onPress={() => void finishLidarCapture()}
+            style={({ pressed }) => [
+              styles.captureButton,
+              styles.captureFullscreenFinish,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Feather name="check" size={17} color={colors.foreground} />
+            <Text style={styles.captureButtonText}>Finish and compress</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <KeyboardAwareScrollViewCompat
       style={styles.page}
@@ -803,7 +897,7 @@ export default function ScanWorkspaceScreen() {
           <Feather name="crosshair" size={19} color={colors.primary} />
         </View>
 
-        <Text style={styles.label}>Module type</Text>
+        <Text style={styles.label}>Record category</Text>
         <View style={styles.segmentGroup}>
           {MODULE_TYPES.map((type) => {
             const selected = moduleType === type;
@@ -822,12 +916,15 @@ export default function ScanWorkspaceScreen() {
                     selected && styles.segmentTextSelected,
                   ]}
                 >
-                  {type}
+                  {moduleLabel(type)}
                 </Text>
               </Pressable>
             );
           })}
         </View>
+        <Text style={styles.helperText}>
+          This labels the record only. It does not change scan detail or accuracy.
+        </Text>
 
         <Text style={styles.label}>Vessel or asset</Text>
         <TextInput
@@ -889,20 +986,7 @@ export default function ScanWorkspaceScreen() {
             <View style={styles.lidarPreviewFrame} testID="lidar-live-preview">
               <LidarPreview style={StyleSheet.absoluteFill} />
               <View pointerEvents="none" style={styles.lidarPreviewHud}>
-                {capturePhase === 'capturing' ? (
-                  <>
-                    <View style={styles.lidarPreviewBadge}>
-                      <View style={styles.lidarPreviewLiveDot} />
-                      <Text style={styles.lidarPreviewBadgeText}>
-                        LIVE COVERAGE · {captureMeshCount} SURFACES
-                      </Text>
-                    </View>
-                    <Text style={styles.lidarPreviewHint}>
-                      Green mesh marks captured areas. Move around the object
-                      until the surfaces you need are covered.
-                    </Text>
-                  </>
-                ) : capturePhase === 'compressing' ? (
+                {capturePhase === 'compressing' ? (
                   <>
                     <View style={styles.lidarPreviewBadge}>
                       <ActivityIndicator
@@ -927,45 +1011,7 @@ export default function ScanWorkspaceScreen() {
             </View>
           ) : null}
 
-          {capturePhase === 'capturing' ? (
-            <>
-              <View style={styles.captureProgressTrack}>
-                <View
-                  style={[
-                    styles.captureProgressFill,
-                    { width: `${Math.round(captureProgress * 100)}%` },
-                  ]}
-                />
-              </View>
-              <Text style={styles.captureProgressText}>
-                Scanning · {captureMeshCount} mesh areas found · move slowly
-                around the surface
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                testID="finish-lidar-capture"
-                onPress={() => void finishLidarCapture()}
-                style={({ pressed }) => [
-                  styles.captureButton,
-                  styles.captureStopButton,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Feather name="check" size={16} color={colors.foreground} />
-                <Text style={styles.captureButtonText}>
-                  Finish and compress
-                </Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                testID="cancel-lidar-capture"
-                onPress={cancelLidarCapture}
-                style={styles.captureCancel}
-              >
-                <Text style={styles.captureCancelText}>Cancel capture</Text>
-              </Pressable>
-            </>
-          ) : capturePhase === 'compressing' ? (
+          {capturePhase === 'compressing' ? (
             <View style={styles.captureBusy}>
               <ActivityIndicator color={colors.primary} />
               <View style={styles.captureBusyCopy}>
@@ -1149,7 +1195,7 @@ export default function ScanWorkspaceScreen() {
                       {item.vesselAssetName}
                     </Text>
                     <Text style={styles.recordMeta} numberOfLines={1}>
-                      {item.moduleType} · {item.fileName} ·{' '}
+                      {moduleLabel(item.moduleType)} · {item.fileName} ·{' '}
                       {formatSize(item.fileSize)}
                     </Text>
                     <Text
@@ -1477,6 +1523,14 @@ function createStyles(colors: ReturnType<typeof useColors>) {
       fontSize: 12,
       marginTop: 5,
     },
+    helperText: {
+      color: colors.mutedForeground,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 11,
+      lineHeight: 16,
+      marginTop: 7,
+      marginBottom: 2,
+    },
     segmentGroup: {
       flexDirection: 'row',
       gap: 8,
@@ -1536,6 +1590,101 @@ function createStyles(colors: ReturnType<typeof useColors>) {
       backgroundColor: colors.background,
       padding: 12,
       gap: 11,
+    },
+    captureFullscreen: {
+      flex: 1,
+      backgroundColor: colors.background,
+      paddingHorizontal: 14,
+      gap: 12,
+    },
+    captureFullscreenHeader: {
+      minHeight: 44,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 8,
+    },
+    captureFullscreenCancel: {
+      minWidth: 76,
+      minHeight: 42,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+      paddingHorizontal: 4,
+    },
+    captureFullscreenCancelText: {
+      color: colors.foreground,
+      fontFamily: 'DMSans_500Medium',
+      fontSize: 12,
+    },
+    captureFullscreenLive: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 7,
+      borderRadius: 8,
+      backgroundColor: colors.scanPreviewScrim,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+    },
+    captureFullscreenLiveText: {
+      color: colors.scanPreviewText,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 10,
+      letterSpacing: 0.7,
+    },
+    captureFullscreenSurfaceCount: {
+      minWidth: 76,
+      color: colors.mutedForeground,
+      fontFamily: 'DMSans_500Medium',
+      fontSize: 11,
+      textAlign: 'right',
+    },
+    captureFullscreenPreview: {
+      flex: 1,
+      minHeight: 240,
+      overflow: 'hidden',
+      borderRadius: 16,
+      backgroundColor: colors.foreground,
+    },
+    captureFullscreenHud: {
+      ...StyleSheet.absoluteFill,
+      justifyContent: 'space-between',
+      padding: 12,
+    },
+    captureFullscreenHint: {
+      alignSelf: 'stretch',
+      borderRadius: 10,
+      backgroundColor: colors.scanPreviewScrim,
+      paddingHorizontal: 11,
+      paddingVertical: 9,
+      color: colors.scanPreviewText,
+      fontFamily: 'DMSans_500Medium',
+      fontSize: 11,
+      lineHeight: 16,
+    },
+    captureFullscreenControls: {
+      gap: 8,
+    },
+    captureFullscreenProgressLabel: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    captureFullscreenProgressTitle: {
+      color: colors.foreground,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 12,
+    },
+    captureFullscreenProgressValue: {
+      color: colors.primary,
+      fontFamily: 'IBMPlexMono_500Medium',
+      fontSize: 11,
+    },
+    captureFullscreenFinish: {
+      minHeight: 48,
+      backgroundColor: colors.card,
+      borderColor: colors.border,
+      marginTop: 3,
     },
     captureHeading: {
       flexDirection: 'row',
