@@ -5,9 +5,10 @@ uses ARKit scene reconstruction and is not included in Expo Go.
 
 ## Build and test on a physical iPhone or iPad
 
-Replit's Expo preview uses Expo Go, and Replit's automated App Store build flow
-does not compile custom Swift modules. Build this app on a Mac with Xcode and
-CocoaPods:
+The Replit Expo Go preview cannot load this local Swift module. Replit Expo
+Launch can compile it for an App Store build; the latest publish log reached
+Xcode and identified a Swift source error. For local device development, build
+on a Mac with Xcode and CocoaPods:
 
 1. Clone the workspace and install dependencies from the repository root:
 

@@ -123,7 +123,7 @@ public final class AscLidarPreviewView: ExpoView, ARSCNViewDelegate {
     faceData.reserveCapacity(
       ((faces.count + sampleStep - 1) / sampleStep) * bytesPerPrimitive
     )
-    let faceBuffer = faces.buffer.contents().advanced(by: faces.offset)
+    let faceBuffer = faces.buffer.contents()
     for faceIndex in stride(from: 0, to: faces.count, by: sampleStep) {
       let facePointer = faceBuffer.advanced(by: faceIndex * bytesPerPrimitive)
       faceData.append(Data(bytes: facePointer, count: bytesPerPrimitive))
