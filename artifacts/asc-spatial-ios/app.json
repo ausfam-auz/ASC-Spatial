@@ -13,6 +13,8 @@
       "backgroundColor": "#f8f6f2"
     },
     "ios": {
+      "bundleIdentifier": "app.replit.ascspatialios",
+      "icon": "./assets/images/app-store-icon.png",
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "ASC Spatial uses the camera and LiDAR sensor to capture 3D inspection scans."
@@ -22,10 +24,7 @@
     "web": {
       "favicon": "./assets/images/icon.png"
     },
-    "plugins": [
-      "expo-router",
-      "expo-secure-store"
-    ],
+    "plugins": ["expo-router", "expo-secure-store"],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true

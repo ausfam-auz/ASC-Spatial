@@ -25,6 +25,7 @@ import {
 } from '@workspace/api-client-react';
 import { KeyboardAwareScrollViewCompat } from '@/components/KeyboardAwareScrollViewCompat';
 import { PlyScanPreview } from '@/components/PlyScanPreview';
+import { LidarPreview } from '@/components/LidarPreview';
 import { useColors } from '@/hooks/useColors';
 import { useAuth } from '@clerk/expo';
 import { useGetAccount } from '@workspace/api-client-react';
@@ -883,6 +884,49 @@ export default function ScanWorkspaceScreen() {
             </View>
           </View>
 
+          {lidarStatus?.supported &&
+          lidarStatus.cameraPermission === 'authorized' ? (
+            <View style={styles.lidarPreviewFrame} testID="lidar-live-preview">
+              <LidarPreview style={StyleSheet.absoluteFill} />
+              <View pointerEvents="none" style={styles.lidarPreviewHud}>
+                {capturePhase === 'capturing' ? (
+                  <>
+                    <View style={styles.lidarPreviewBadge}>
+                      <View style={styles.lidarPreviewLiveDot} />
+                      <Text style={styles.lidarPreviewBadgeText}>
+                        LIVE COVERAGE · {captureMeshCount} SURFACES
+                      </Text>
+                    </View>
+                    <Text style={styles.lidarPreviewHint}>
+                      Green mesh marks captured areas. Move around the object
+                      until the surfaces you need are covered.
+                    </Text>
+                  </>
+                ) : capturePhase === 'compressing' ? (
+                  <>
+                    <View style={styles.lidarPreviewBadge}>
+                      <ActivityIndicator
+                        size="small"
+                        color={colors.scanCoverage}
+                      />
+                      <Text style={styles.lidarPreviewBadgeText}>
+                        FINISHING CAPTURE
+                      </Text>
+                    </View>
+                    <Text style={styles.lidarPreviewHint}>
+                      The captured mesh is being prepared. Keep the app open
+                      until the scan is ready.
+                    </Text>
+                  </>
+                ) : (
+                  <Text style={styles.lidarPreviewIdleText}>
+                    Start a scan to see live LiDAR coverage here.
+                  </Text>
+                )}
+              </View>
+            </View>
+          ) : null}
+
           {capturePhase === 'capturing' ? (
             <>
               <View style={styles.captureProgressTrack}>
@@ -1566,6 +1610,63 @@ function createStyles(colors: ReturnType<typeof useColors>) {
       fontFamily: 'DMSans_400Regular',
       fontSize: 11,
       lineHeight: 16,
+    },
+    lidarPreviewFrame: {
+      height: 230,
+      overflow: 'hidden',
+      borderRadius: 12,
+      backgroundColor: colors.muted,
+    },
+    lidarPreviewHud: {
+      ...StyleSheet.absoluteFill,
+      justifyContent: 'space-between',
+      padding: 11,
+    },
+    lidarPreviewBadge: {
+      alignSelf: 'flex-start',
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 7,
+      borderRadius: 8,
+      backgroundColor: colors.scanPreviewScrim,
+      paddingHorizontal: 9,
+      paddingVertical: 6,
+    },
+    lidarPreviewLiveDot: {
+      width: 7,
+      height: 7,
+      borderRadius: 4,
+      backgroundColor: colors.scanCoverage,
+    },
+    lidarPreviewBadgeText: {
+      color: colors.scanPreviewText,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 9,
+      letterSpacing: 0.6,
+    },
+    lidarPreviewHint: {
+      alignSelf: 'stretch',
+      borderRadius: 8,
+      backgroundColor: colors.card,
+      paddingHorizontal: 9,
+      paddingVertical: 7,
+      color: colors.foreground,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 10,
+      lineHeight: 15,
+    },
+    lidarPreviewIdleText: {
+      alignSelf: 'center',
+      marginTop: 'auto',
+      marginBottom: 'auto',
+      borderRadius: 8,
+      backgroundColor: 'rgba(10, 20, 24, 0.72)',
+      paddingHorizontal: 11,
+      paddingVertical: 8,
+      color: '#f4f7f2',
+      fontFamily: 'DMSans_500Medium',
+      fontSize: 11,
+      textAlign: 'center',
     },
     captureCancel: {
       alignSelf: 'center',

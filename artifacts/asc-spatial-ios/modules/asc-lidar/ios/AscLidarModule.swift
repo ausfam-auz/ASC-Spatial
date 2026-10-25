@@ -16,26 +16,8 @@ private struct PlyMesh {
   let decimationFactor: Int
 }
 
-private final class AscLidarSessionDelegate: NSObject, ARSessionDelegate {
-  var onAnchorsChanged: (([ARAnchor], [UUID]) -> Void)?
-
-  func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
-    onAnchorsChanged?(anchors, [])
-  }
-
-  func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
-    onAnchorsChanged?(anchors, [])
-  }
-
-  func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
-    onAnchorsChanged?([], anchors.map(\.identifier))
-  }
-}
-
 public final class AscLidarModule: Module {
   private let session = ARSession()
-  private let sessionDelegate = AscLidarSessionDelegate()
-  private let delegateQueue = DispatchQueue(label: "com.ascspatial.lidar.session")
   private let stateLock = NSLock()
   private let maximumTriangleCount = 1_000_000
   private let maximumPointCount = 1_500_000
@@ -49,6 +31,16 @@ public final class AscLidarModule: Module {
   public func definition() -> ModuleDefinition {
     Name("AscLidar")
     Events("onCaptureProgress", "onCompressionProgress")
+
+    View(AscLidarPreviewView.self) {
+      ViewName("Preview")
+      OnViewDidUpdateProps { [weak self] view in
+        guard let self else { return }
+        view.connect(session: self.session) { [weak self] incoming, removed in
+          self?.updateMeshAnchors(incoming, removed: removed)
+        }
+      }
+    }
 
     Function("getDeviceStatus") { () -> [String: Any] in
       self.deviceStatus()
@@ -120,18 +112,8 @@ public final class AscLidarModule: Module {
     }
   }
 
-  public override func didCreate() {
-    sessionDelegate.onAnchorsChanged = { [weak self] incoming, removed in
-      self?.updateMeshAnchors(incoming, removed: removed)
-    }
-    session.delegate = sessionDelegate
-    session.delegateQueue = delegateQueue
-  }
-
   public override func willDestroy() {
     cancelCapture()
-    session.delegate = nil
-    sessionDelegate.onAnchorsChanged = nil
   }
 
   private func deviceStatus() -> [String: Any] {

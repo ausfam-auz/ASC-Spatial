@@ -15,7 +15,7 @@ Pod::Spec.new do |s|
   s.source = { :git => 'https://github.com/expo/expo.git' }
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
-  s.frameworks = 'ARKit', 'AVFoundation'
+  s.frameworks = 'ARKit', 'AVFoundation', 'Metal', 'SceneKit'
   s.source_files = '**/*.{h,m,mm,swift}'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',

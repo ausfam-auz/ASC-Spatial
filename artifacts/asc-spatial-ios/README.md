@@ -63,6 +63,30 @@ simulator build, not an installable iPhone/iPad app, and it cannot verify the
 LiDAR sensor. Installing on a physical device still requires Apple signing and
 a LiDAR-equipped device.
 
+## Installable iPhone/iPad build
+
+The manual GitHub Actions workflow at `.github/workflows/asc-spatial-ios-device.yml`
+creates a signed IPA using the repository's encrypted Actions secrets. Before
+running it, add these secrets under **Settings → Secrets and variables →
+Actions** in the GitHub repository:
+
+- `ASC_IOS_CERTIFICATE_P12_BASE64` — base64-encoded `.p12` signing certificate
+- `ASC_IOS_CERTIFICATE_PASSWORD` — password used when exporting that certificate
+- `ASC_IOS_PROVISIONING_PROFILE_BASE64` — base64-encoded `.mobileprovision` file
+- `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` — the app's Clerk publishable key
+- `EXPO_PUBLIC_CLERK_PROXY_URL` — optional; set only if Clerk uses a proxy
+
+Use a matching Apple Development certificate and Development profile for
+`development`, or an Apple Distribution certificate and Ad Hoc profile for
+`ad-hoc`. The profile must use bundle ID `app.replit.ascspatialios`; a
+Development or Ad Hoc profile must also include the device UDID for direct
+installation. Do not commit signing files or paste their contents into chat.
+
+Then open **Actions → ASC Spatial iOS device build → Run workflow**, choose the
+matching export method, and download the `.ipa` from the completed run's
+**Artifacts** section. The IPA can be installed only on devices included in the
+profile; the build does not submit the app to the App Store.
+
 References:
 
 - [Replit native mobile apps](https://docs.replit.com/features/artifact-types/building-mobile-apps)

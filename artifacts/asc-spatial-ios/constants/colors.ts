@@ -32,6 +32,9 @@ const colors = {
     destructiveForeground: '#ffffff',
     border: '#d2d9e0',
     input: '#d2d9e0',
+    scanCoverage: '#72c83b',
+    scanPreviewScrim: 'rgba(10, 20, 24, 0.78)',
+    scanPreviewText: '#f8f8f4',
   },
   dark: {
     text: '#eeeae2',
@@ -52,6 +55,9 @@ const colors = {
     destructiveForeground: '#ffffff',
     border: '#414f5d',
     input: '#414f5d',
+    scanCoverage: '#8de846',
+    scanPreviewScrim: 'rgba(10, 20, 24, 0.82)',
+    scanPreviewText: '#f8f8f4',
   },
 
   radius: 8,
