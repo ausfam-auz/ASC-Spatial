@@ -57,13 +57,16 @@ jobs:
             exit 1
           fi
 
-          scheme="$(xcodebuild -list -json -workspace "$workspace" \
-            | jq -r '.workspace.schemes[] | select(startswith("Pods-") | not)' \
-            | head -n 1)"
-          if [[ -z "$scheme" ]]; then
-            echo "Could not find the app scheme in $workspace." >&2
+          scheme="$(basename "$workspace" .xcworkspace)"
+          available_schemes="$(xcodebuild -list -json -workspace "$workspace" \
+            | jq -r '.workspace.schemes[]')"
+          if ! grep -Fxq "$scheme" <<< "$available_schemes"; then
+            echo "Could not find app scheme '$scheme' in $workspace." >&2
+            echo "Available schemes:" >&2
+            printf '%s\n' "$available_schemes" >&2
             exit 1
           fi
+          printf 'Building app scheme: %s\n' "$scheme"
 
           xcodebuild \
             -workspace "$workspace" \
