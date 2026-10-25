@@ -6,6 +6,7 @@ import {
   Linking,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -25,18 +26,61 @@ import {
 } from '@workspace/api-client-react';
 import { KeyboardAwareScrollViewCompat } from '@/components/KeyboardAwareScrollViewCompat';
 import { PlyScanPreview } from '@/components/PlyScanPreview';
+import {
+  ScanProcessingControls,
+  type ScanProcessingOptions,
+} from '@/components/ScanProcessingControls';
 import { LidarPreview } from '@/components/LidarPreview';
 import { useColors } from '@/hooks/useColors';
 import { useAuth } from '@clerk/expo';
 import { useGetAccount } from '@workspace/api-client-react';
 import { router } from 'expo-router';
-import { lidarScanner, type LidarDeviceStatus } from '@/lib/lidarScanner';
+import {
+  lidarScanner,
+  type LidarDeviceStatus,
+  type ScanProcessingMode,
+} from '@/lib/lidarScanner';
 import { scanUploadQueue } from '@/lib/scanUploadQueue';
 import type { ScanUploadQueueItem } from '@/lib/scanUploadQueueCore';
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const MODULE_TYPES = ['DeckOps', 'ToolingAudit'] as const;
 type ModuleType = (typeof MODULE_TYPES)[number];
+
+const CUSTOM_SCAN_OPTIONS: ScanProcessingOptions = {
+  depthRangeMeters: 5.2,
+  voxelSizeMillimeters: 10,
+  simplificationPercent: 45,
+  automaticCrop: true,
+  fillHoles: true,
+};
+
+const SCAN_PRESETS: Record<
+  Exclude<ScanProcessingMode, 'custom'>,
+  ScanProcessingOptions
+> = {
+  default: {
+    depthRangeMeters: 5.2,
+    voxelSizeMillimeters: 10,
+    simplificationPercent: 75,
+    automaticCrop: false,
+    fillHoles: false,
+  },
+  dense: {
+    depthRangeMeters: 10,
+    voxelSizeMillimeters: 2,
+    simplificationPercent: 0,
+    automaticCrop: false,
+    fillHoles: false,
+  },
+  cloud: {
+    depthRangeMeters: 10,
+    voxelSizeMillimeters: 10,
+    simplificationPercent: 0,
+    automaticCrop: false,
+    fillHoles: false,
+  },
+};
 
 interface SelectedScanFile {
   uri: string;
@@ -46,6 +90,8 @@ interface SelectedScanFile {
   vertexCount?: number;
   faceCount?: number;
   decimationFactor?: number;
+  processingMode?: ScanProcessingMode;
+  processingWarnings?: string[];
 }
 
 function localDateTimeValue(date = new Date()): string {
@@ -184,8 +230,13 @@ export default function ScanWorkspaceScreen() {
     null,
   );
   const [capturePhase, setCapturePhase] = useState<
-    'idle' | 'capturing' | 'compressing'
+    'idle' | 'capturing' | 'review' | 'compressing'
   >('idle');
+  const [capturePaused, setCapturePaused] = useState(false);
+  const [processingMode, setProcessingMode] =
+    useState<ScanProcessingMode>('default');
+  const [scanProcessingOptions, setScanProcessingOptions] =
+    useState<ScanProcessingOptions>(CUSTOM_SCAN_OPTIONS);
   const [captureProgress, setCaptureProgress] = useState(0);
   const [captureMeshCount, setCaptureMeshCount] = useState(0);
   const [compressionStage, setCompressionStage] = useState('');
@@ -441,6 +492,9 @@ export default function ScanWorkspaceScreen() {
     setSelectedFile(null);
     setCaptureProgress(0.02);
     setCaptureMeshCount(0);
+    setCapturePaused(false);
+    setProcessingMode('default');
+    setScanProcessingOptions(CUSTOM_SCAN_OPTIONS);
     try {
       await lidarScanner.startCapture();
       setCapturePhase('capturing');
@@ -458,7 +512,12 @@ export default function ScanWorkspaceScreen() {
     setCompressionStage('Preparing captured mesh');
     setCaptureProgress(0.08);
     try {
-      const result = await lidarScanner.finishCapture();
+      const result = await lidarScanner.finishCapture(
+        processingMode,
+        processingMode === 'custom'
+          ? scanProcessingOptions
+          : SCAN_PRESETS[processingMode],
+      );
       if (result.size > MAX_FILE_SIZE) {
         lidarScanner.removeCapturedFile(result.uri);
         throw new Error(
@@ -479,6 +538,8 @@ export default function ScanWorkspaceScreen() {
         vertexCount: result.vertexCount,
         faceCount: result.faceCount,
         decimationFactor: result.decimationFactor,
+        processingMode: result.processingMode,
+        processingWarnings: result.processingWarnings,
       });
       setSelectedFile(null);
       setFormError(null);
@@ -513,8 +574,55 @@ export default function ScanWorkspaceScreen() {
   function cancelLidarCapture() {
     lidarScanner.cancelCapture();
     setCapturePhase('idle');
+    setCapturePaused(false);
     setCaptureProgress(0);
     setCaptureMeshCount(0);
+  }
+
+  function toggleCapturePause() {
+    try {
+      if (capturePaused) {
+        lidarScanner.resumeCapture();
+        setCapturePaused(false);
+      } else {
+        lidarScanner.pauseCapture();
+        setCapturePaused(true);
+      }
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : 'The LiDAR scan could not be resumed.',
+      );
+    }
+  }
+
+  function openScanProcessingOptions() {
+    try {
+      lidarScanner.pauseCapture();
+      setCapturePaused(true);
+      setCapturePhase('review');
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : 'The scan could not be paused for processing.',
+      );
+    }
+  }
+
+  function returnToCapture() {
+    try {
+      lidarScanner.resumeCapture();
+      setCapturePaused(false);
+      setCapturePhase('capturing');
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : 'The LiDAR scan could not be resumed.',
+      );
+    }
   }
 
   async function openCameraSettings() {
@@ -777,6 +885,222 @@ export default function ScanWorkspaceScreen() {
     );
   }
 
+  if (pendingCapturePreview) {
+    return (
+      <View
+        style={[
+          styles.captureFullscreen,
+          {
+            paddingTop: topInset + 8,
+            paddingBottom: bottomInset + 10,
+          },
+        ]}
+      >
+        <PlyScanPreview
+          fullScreen
+          uri={pendingCapturePreview.uri}
+          fileName={pendingCapturePreview.name}
+          fileSize={pendingCapturePreview.size ?? 0}
+          processingMode={pendingCapturePreview.processingMode}
+          processingWarnings={pendingCapturePreview.processingWarnings}
+          onUseScan={acceptCapturedPreview}
+          onDiscardAndRecapture={discardPreviewAndRecapture}
+        />
+      </View>
+    );
+  }
+
+  if (capturePhase === 'review') {
+    return (
+      <View
+        style={[
+          styles.captureFullscreen,
+          styles.processingPage,
+          {
+            paddingTop: topInset + 8,
+            paddingBottom: bottomInset + 10,
+          },
+        ]}
+      >
+        <View style={styles.captureFullscreenHeader}>
+          <Pressable
+            accessibilityRole="button"
+            testID="resume-lidar-capture"
+            onPress={returnToCapture}
+            style={styles.captureFullscreenCancel}
+          >
+            <Feather name="arrow-left" size={17} color={colors.foreground} />
+            <Text style={styles.captureFullscreenCancelText}>Back to scan</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Discard scan"
+            testID="discard-lidar-capture"
+            onPress={cancelLidarCapture}
+            style={styles.captureIconButton}
+          >
+            <Feather name="x" size={19} color={colors.foreground} />
+          </Pressable>
+        </View>
+
+        <ScrollView
+          style={styles.processingScroll}
+          contentContainerStyle={styles.processingScrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+        <View style={styles.processingIntro}>
+          <View style={styles.processingIcon}>
+            <Feather name="box" size={20} color={colors.primary} />
+          </View>
+          <Text style={styles.processingEyebrow}>SCAN PROCESSING</Text>
+          <Text style={styles.processingTitle}>Choose your scan output</Text>
+          <Text style={styles.processingDescription}>
+            Higher mesh detail keeps more surfaces. Point cloud keeps measured
+            points without creating a solid surface.
+          </Text>
+        </View>
+
+        <View style={styles.processingOptions}>
+          {([
+            {
+              value: 'default',
+              title: 'Default',
+              description: 'Balanced surface detail',
+              icon: 'box',
+            },
+            {
+              value: 'dense',
+              title: 'Dense',
+              description: 'Keep the most mesh detail',
+              icon: 'grid',
+            },
+            {
+              value: 'custom',
+              title: 'Custom',
+              description: 'Tune depth, detail and cleanup',
+              icon: 'sliders',
+            },
+            {
+              value: 'cloud',
+              title: 'Cloud',
+              description: 'Point cloud only',
+              icon: 'circle',
+            },
+          ] as const).map((option) => {
+            const selected = processingMode === option.value;
+            return (
+              <Pressable
+                key={option.value}
+                accessibilityRole="radio"
+                accessibilityState={{ selected }}
+                testID={`processing-mode-${option.value}`}
+                onPress={() => setProcessingMode(option.value)}
+                style={({ pressed }) => [
+                  styles.processingOption,
+                  selected && styles.processingOptionSelected,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <View style={styles.processingOptionTop}>
+                  <Feather
+                    name={option.icon}
+                    size={17}
+                    color={selected ? colors.primary : colors.mutedForeground}
+                  />
+                  {selected ? (
+                    <Feather
+                      name="check-circle"
+                      size={16}
+                      color={colors.primary}
+                    />
+                  ) : null}
+                </View>
+                <Text style={styles.processingOptionTitle}>
+                  {option.title}
+                </Text>
+                <Text style={styles.processingOptionDescription}>
+                  {option.description}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {processingMode === 'custom' ? (
+          <ScanProcessingControls
+            value={scanProcessingOptions}
+            onChange={setScanProcessingOptions}
+          />
+        ) : processingMode === 'cloud' ? (
+          <Text style={styles.processingFootnote}>
+            Cloud output contains points only. Surface cleanup settings apply
+            to mesh modes.
+          </Text>
+        ) : null}
+        </ScrollView>
+
+        <View style={styles.processingBottom}>
+          <Text style={styles.processingFootnote}>
+            The original scan stays on this device until you use or discard it.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            testID="process-lidar-scan"
+            onPress={() => void finishLidarCapture()}
+            style={({ pressed }) => [
+              styles.captureButton,
+              styles.processScanButton,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Feather name="check" size={17} color={colors.primaryForeground} />
+            <Text style={styles.processScanButtonText}>Process scan</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  if (capturePhase === 'compressing') {
+    return (
+      <View
+        style={[
+          styles.captureFullscreen,
+          styles.compressingPage,
+          {
+            paddingTop: topInset + 8,
+            paddingBottom: bottomInset + 10,
+          },
+        ]}
+      >
+        <View style={styles.captureFullscreenHeader}>
+          <Text style={styles.captureFullscreenLiveText}>PROCESSING SCAN</Text>
+          <ActivityIndicator color={colors.primary} />
+        </View>
+        <View style={styles.compressingContent}>
+          <View style={styles.processingIcon}>
+            <ActivityIndicator color={colors.primary} />
+          </View>
+          <Text style={styles.processingTitle}>Building your scan</Text>
+          <Text style={styles.processingDescription}>
+            {compressionStage || 'Preparing the captured geometry…'}
+          </Text>
+          <View style={styles.captureProgressTrack}>
+            <View
+              style={[
+                styles.captureProgressFill,
+                { width: `${Math.round(captureProgress * 100)}%` },
+              ]}
+            />
+          </View>
+          <Text style={styles.processingFootnote}>
+            Keep ASC Spatial open while the mesh is processed.
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
   if (capturePhase === 'capturing') {
     const progressPercent = Math.round(captureProgress * 100);
     return (
@@ -803,9 +1127,11 @@ export default function ScanWorkspaceScreen() {
             <Feather name="x" size={17} color={colors.foreground} />
             <Text style={styles.captureFullscreenCancelText}>Cancel</Text>
           </Pressable>
-          <View style={styles.captureFullscreenLive}>
+        <View style={styles.captureFullscreenLive}>
             <View style={styles.lidarPreviewLiveDot} />
-            <Text style={styles.captureFullscreenLiveText}>LIVE SCAN</Text>
+          <Text style={styles.captureFullscreenLiveText}>
+            {capturePaused ? 'PAUSED' : 'LIVE SCAN'}
+          </Text>
           </View>
           <Text style={styles.captureFullscreenSurfaceCount}>
             {captureMeshCount} surfaces
@@ -849,19 +1175,37 @@ export default function ScanWorkspaceScreen() {
           <Text style={styles.captureProgressText}>
             {captureMeshCount} mesh areas found · move slowly
           </Text>
-          <Pressable
-            accessibilityRole="button"
-            testID="finish-lidar-capture"
-            onPress={() => void finishLidarCapture()}
-            style={({ pressed }) => [
-              styles.captureButton,
-              styles.captureFullscreenFinish,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Feather name="check" size={17} color={colors.foreground} />
-            <Text style={styles.captureButtonText}>Finish and compress</Text>
-          </Pressable>
+          <View style={styles.captureFullscreenFooter}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={capturePaused ? 'Resume scan' : 'Pause scan'}
+              testID="toggle-lidar-pause"
+              onPress={toggleCapturePause}
+              style={({ pressed }) => [
+                styles.capturePauseButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Feather
+                name={capturePaused ? 'play' : 'pause'}
+                size={21}
+                color={colors.foreground}
+              />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              testID="finish-lidar-capture"
+              onPress={openScanProcessingOptions}
+              style={({ pressed }) => [
+                styles.captureButton,
+                styles.captureFullscreenFinish,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Feather name="check" size={17} color={colors.foreground} />
+              <Text style={styles.captureButtonText}>Done</Text>
+            </Pressable>
+          </View>
         </View>
       </View>
     );
@@ -986,43 +1330,14 @@ export default function ScanWorkspaceScreen() {
             <View style={styles.lidarPreviewFrame} testID="lidar-live-preview">
               <LidarPreview style={StyleSheet.absoluteFill} />
               <View pointerEvents="none" style={styles.lidarPreviewHud}>
-                {capturePhase === 'compressing' ? (
-                  <>
-                    <View style={styles.lidarPreviewBadge}>
-                      <ActivityIndicator
-                        size="small"
-                        color={colors.scanCoverage}
-                      />
-                      <Text style={styles.lidarPreviewBadgeText}>
-                        FINISHING CAPTURE
-                      </Text>
-                    </View>
-                    <Text style={styles.lidarPreviewHint}>
-                      The captured mesh is being prepared. Keep the app open
-                      until the scan is ready.
-                    </Text>
-                  </>
-                ) : (
-                  <Text style={styles.lidarPreviewIdleText}>
-                    Start a scan to see live LiDAR coverage here.
-                  </Text>
-                )}
+                <Text style={styles.lidarPreviewIdleText}>
+                  Start a scan to see live LiDAR coverage here.
+                </Text>
               </View>
             </View>
           ) : null}
 
-          {capturePhase === 'compressing' ? (
-            <View style={styles.captureBusy}>
-              <ActivityIndicator color={colors.primary} />
-              <View style={styles.captureBusyCopy}>
-                <Text style={styles.captureTitle}>Compressing scan</Text>
-                <Text style={styles.captureCaption}>
-                  {compressionStage || 'Preparing the mesh for upload…'} ·{' '}
-                  {Math.round(captureProgress * 100)}%
-                </Text>
-              </View>
-            </View>
-          ) : lidarStatus?.supported &&
+          {lidarStatus?.supported &&
             lidarStatus.cameraPermission === 'authorized' ? (
             <Pressable
               accessibilityRole="button"
@@ -1075,16 +1390,6 @@ export default function ScanWorkspaceScreen() {
           ) : null}
         </View>
 
-        {pendingCapturePreview ? (
-          <PlyScanPreview
-            uri={pendingCapturePreview.uri}
-            fileName={pendingCapturePreview.name}
-            fileSize={pendingCapturePreview.size ?? 0}
-            onUseScan={acceptCapturedPreview}
-            onDiscardAndRecapture={discardPreviewAndRecapture}
-          />
-        ) : null}
-
         <Pressable
           accessibilityRole="button"
           testID="choose-scan-file"
@@ -1106,7 +1411,7 @@ export default function ScanWorkspaceScreen() {
           ]}
         >
           <View style={styles.fileIcon}>
-            {isPicking || capturePhase === 'compressing' ? (
+            {isPicking ? (
               <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <Feather name="upload-cloud" size={20} color={colors.primary} />
@@ -1681,10 +1986,143 @@ function createStyles(colors: ReturnType<typeof useColors>) {
       fontSize: 11,
     },
     captureFullscreenFinish: {
+      flex: 1,
       minHeight: 48,
       backgroundColor: colors.card,
       borderColor: colors.border,
       marginTop: 3,
+    },
+    captureFullscreenFooter: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 20,
+      paddingTop: 7,
+    },
+    capturePauseButton: {
+      width: 62,
+      height: 62,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 2,
+      borderColor: colors.border,
+      borderRadius: 31,
+      backgroundColor: colors.card,
+    },
+    captureIconButton: {
+      width: 42,
+      height: 42,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    processingPage: {
+      flex: 1,
+    },
+    processingScroll: {
+      flex: 1,
+    },
+    processingScrollContent: {
+      gap: 14,
+      paddingBottom: 12,
+    },
+    processingIntro: {
+      alignItems: 'center',
+      gap: 8,
+      paddingTop: 12,
+    },
+    processingIcon: {
+      width: 48,
+      height: 48,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 14,
+      backgroundColor: colors.muted,
+      marginBottom: 3,
+    },
+    processingEyebrow: {
+      color: colors.primary,
+      fontFamily: 'IBMPlexMono_500Medium',
+      fontSize: 9,
+      letterSpacing: 1.3,
+    },
+    processingTitle: {
+      color: colors.foreground,
+      fontFamily: 'InstrumentSerif_400Regular',
+      fontSize: 28,
+      textAlign: 'center',
+    },
+    processingDescription: {
+      maxWidth: 330,
+      color: colors.mutedForeground,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 12,
+      lineHeight: 18,
+      textAlign: 'center',
+    },
+    processingOptions: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 9,
+    },
+    processingOption: {
+      width: '48%',
+      minHeight: 105,
+      justifyContent: 'space-between',
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 12,
+      backgroundColor: colors.card,
+      padding: 11,
+    },
+    processingOptionSelected: {
+      borderColor: colors.primary,
+      backgroundColor: colors.muted,
+    },
+    processingOptionTop: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    processingOptionTitle: {
+      color: colors.foreground,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 13,
+    },
+    processingOptionDescription: {
+      color: colors.mutedForeground,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 10,
+      lineHeight: 14,
+    },
+    processingBottom: {
+      gap: 10,
+      paddingBottom: 4,
+    },
+    processingFootnote: {
+      color: colors.mutedForeground,
+      fontFamily: 'DMSans_400Regular',
+      fontSize: 10,
+      lineHeight: 15,
+      textAlign: 'center',
+    },
+    processScanButton: {
+      minHeight: 50,
+      borderColor: colors.primary,
+      backgroundColor: colors.primary,
+    },
+    processScanButtonText: {
+      color: colors.primaryForeground,
+      fontFamily: 'DMSans_600SemiBold',
+      fontSize: 13,
+    },
+    compressingPage: {
+      justifyContent: 'space-between',
+    },
+    compressingContent: {
+      alignItems: 'center',
+      gap: 14,
+      paddingHorizontal: 12,
+      paddingBottom: 40,
     },
     captureHeading: {
       flexDirection: 'row',

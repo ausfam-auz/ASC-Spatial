@@ -33,13 +33,30 @@ export interface CapturedScan {
   vertexCount: number;
   faceCount: number;
   decimationFactor: number;
+  processingMode: ScanProcessingMode;
+  processingWarnings?: string[];
+}
+
+export type ScanProcessingMode = 'default' | 'dense' | 'custom' | 'cloud';
+
+export interface ScanProcessingOptions {
+  depthRangeMeters: number;
+  voxelSizeMillimeters: number;
+  simplificationPercent: number;
+  automaticCrop: boolean;
+  fillHoles: boolean;
 }
 
 interface LidarNativeModule {
   getDeviceStatus(): LidarDeviceStatus;
   requestCameraPermission(): Promise<LidarDeviceStatus>;
   startCapture(): Promise<{ started: boolean }>;
-  finishCapture(): Promise<CapturedScan>;
+  finishCapture(
+    processingMode: ScanProcessingMode,
+    options: ScanProcessingOptions,
+  ): Promise<CapturedScan>;
+  pauseCapture(): void;
+  resumeCapture(): void;
   cancelCapture(): void;
   removeCapturedFile(uri: string): void;
   addListener(
@@ -85,9 +102,20 @@ export const lidarScanner = {
       ?? Promise.reject(new Error(unavailableStatus.reason));
   },
 
-  finishCapture(): Promise<CapturedScan> {
-    return nativeModule?.finishCapture()
+  finishCapture(
+    processingMode: ScanProcessingMode,
+    options: ScanProcessingOptions,
+  ): Promise<CapturedScan> {
+    return nativeModule?.finishCapture(processingMode, options)
       ?? Promise.reject(new Error(unavailableStatus.reason));
+  },
+
+  pauseCapture(): void {
+    nativeModule?.pauseCapture();
+  },
+
+  resumeCapture(): void {
+    nativeModule?.resumeCapture();
   },
 
   cancelCapture(): void {

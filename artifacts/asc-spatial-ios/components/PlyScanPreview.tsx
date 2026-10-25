@@ -14,12 +14,17 @@ import {
   loadPlyPointCloud,
   type PlyPoint,
   type PlyPointCloud,
+  type PlyTriangle,
 } from '@/lib/plyPreview';
+import type { ScanProcessingMode } from '@/lib/lidarScanner';
 
 interface PlyScanPreviewProps {
   uri: string;
   fileName: string;
   fileSize: number;
+  fullScreen?: boolean;
+  processingMode?: ScanProcessingMode;
+  processingWarnings?: string[];
   onUseScan: () => void;
   onDiscardAndRecapture: () => void;
 }
@@ -29,8 +34,25 @@ type PreviewState =
   | { status: 'ready'; cloud: PlyPointCloud }
   | { status: 'error' };
 
-function pointPath(points: PlyPoint[], rotation: number): string {
-  const ranges = points.reduce(
+type PreviewMode = 'solid' | 'points';
+
+interface ProjectedPoint {
+  x: number;
+  y: number;
+  depth: number;
+}
+
+function createProjector(
+  points: PlyPoint[],
+  triangles: PlyTriangle[],
+  rotation: number,
+  pitch: number,
+): (point: PlyPoint) => ProjectedPoint {
+  const boundsPoints = [
+    ...points,
+    ...triangles.flatMap(({ a, b, c }) => [a, b, c]),
+  ];
+  const ranges = boundsPoints.reduce(
     (result, point) => ({
       minX: Math.min(result.minX, point.x),
       maxX: Math.max(result.maxX, point.x),
@@ -60,22 +82,55 @@ function pointPath(points: PlyPoint[], rotation: number): string {
   );
   const yawCos = Math.cos(rotation);
   const yawSin = Math.sin(rotation);
-  const pitchCos = Math.cos(0.58);
-  const pitchSin = Math.sin(0.58);
+  const pitchCos = Math.cos(pitch);
+  const pitchSin = Math.sin(pitch);
 
+  return (point) => {
+    const x = ((point.x - centerX) / size) * 2;
+    const y = ((point.y - centerY) / size) * 2;
+    const z = ((point.z - centerZ) / size) * 2;
+    const rotatedX = x * yawCos - z * yawSin;
+    const rotatedZ = x * yawSin + z * yawCos;
+    const projectedY = y * pitchCos - rotatedZ * pitchSin;
+    return {
+      x: 180 + rotatedX * 145,
+      y: 112 - projectedY * 84,
+      depth: rotatedZ,
+    };
+  };
+}
+
+function pointPath(
+  points: PlyPoint[],
+  project: (point: PlyPoint) => ProjectedPoint,
+): string {
   return points
     .map((point) => {
-      const x = ((point.x - centerX) / size) * 2;
-      const y = ((point.y - centerY) / size) * 2;
-      const z = ((point.z - centerZ) / size) * 2;
-      const rotatedX = x * yawCos - z * yawSin;
-      const rotatedZ = x * yawSin + z * yawCos;
-      const projectedY = y * pitchCos - rotatedZ * pitchSin;
-      const screenX = 180 + rotatedX * 145;
-      const screenY = 112 - projectedY * 84;
-      return `M${screenX.toFixed(1)} ${screenY.toFixed(1)}l0.1 0`;
+      const projected = project(point);
+      return `M${projected.x.toFixed(1)} ${projected.y.toFixed(1)}l0.1 0`;
     })
     .join('');
+}
+
+function solidFacePaths(
+  triangles: PlyTriangle[],
+  project: (point: PlyPoint) => ProjectedPoint,
+): Array<{ d: string; depth: number; opacity: number }> {
+  return triangles
+    .map(({ a, b, c }) => {
+      const projectedA = project(a);
+      const projectedB = project(b);
+      const projectedC = project(c);
+      const area =
+        (projectedB.x - projectedA.x) * (projectedC.y - projectedA.y) -
+        (projectedB.y - projectedA.y) * (projectedC.x - projectedA.x);
+      return {
+        d: `M${projectedA.x.toFixed(1)} ${projectedA.y.toFixed(1)}L${projectedB.x.toFixed(1)} ${projectedB.y.toFixed(1)}L${projectedC.x.toFixed(1)} ${projectedC.y.toFixed(1)}Z`,
+        depth: (projectedA.depth + projectedB.depth + projectedC.depth) / 3,
+        opacity: Math.max(0.26, Math.min(0.62, 0.28 + Math.abs(area) / 900)),
+      };
+    })
+    .sort((left, right) => left.depth - right.depth);
 }
 
 function formatSize(bytes: number): string {
@@ -87,24 +142,36 @@ export function PlyScanPreview({
   uri,
   fileName,
   fileSize,
+  fullScreen = false,
+  processingMode,
+  processingWarnings = [],
   onUseScan,
   onDiscardAndRecapture,
 }: PlyScanPreviewProps) {
   const colors = useColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [preview, setPreview] = useState<PreviewState>({ status: 'loading' });
+  const [viewMode, setViewMode] = useState<PreviewMode>('solid');
   const [rotation, setRotation] = useState(0);
+  const [pitch, setPitch] = useState(0.58);
   const rotationRef = useRef(0);
+  const pitchRef = useRef(0.58);
   const rotationStartRef = useRef(0);
+  const pitchStartRef = useRef(0.58);
 
   useEffect(() => {
     let cancelled = false;
     setPreview({ status: 'loading' });
     setRotation(0);
+    setPitch(0.58);
     rotationRef.current = 0;
+    pitchRef.current = 0.58;
     void loadPlyPointCloud(uri, () => cancelled)
       .then((cloud) => {
-        if (!cancelled) setPreview({ status: 'ready', cloud });
+        if (!cancelled) {
+          setViewMode(cloud.triangles.length > 0 ? 'solid' : 'points');
+          setPreview({ status: 'ready', cloud });
+        }
       })
       .catch(() => {
         if (!cancelled) setPreview({ status: 'error' });
@@ -121,29 +188,57 @@ export function PlyScanPreview({
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: () => {
           rotationStartRef.current = rotationRef.current;
+          pitchStartRef.current = pitchRef.current;
         },
         onPanResponderMove: (_event, gesture) => {
           const nextRotation = rotationStartRef.current + gesture.dx * 0.012;
+          const nextPitch = Math.max(
+            -0.65,
+            Math.min(1.25, pitchStartRef.current + gesture.dy * 0.009),
+          );
           rotationRef.current = nextRotation;
+          pitchRef.current = nextPitch;
           setRotation(nextRotation);
+          setPitch(nextPitch);
         },
       }),
     [],
   );
 
-  const cloudPath =
+  const project =
     preview.status === 'ready'
-      ? pointPath(preview.cloud.points, rotation)
+      ? createProjector(
+          preview.cloud.points,
+          preview.cloud.triangles,
+          rotation,
+          pitch,
+        )
+      : null;
+  const cloudPath =
+    preview.status === 'ready' && project
+      ? pointPath(preview.cloud.points, project)
       : '';
+  const facePaths =
+    preview.status === 'ready' && project
+      ? solidFacePaths(preview.cloud.triangles, project)
+      : [];
+  const hasSolidSurface = facePaths.length > 0;
 
   return (
-    <View style={styles.card} testID="captured-ply-preview">
+    <View
+      style={[styles.card, fullScreen && styles.fullScreenCard]}
+      testID="captured-ply-preview"
+    >
       <View style={styles.header}>
         <View style={styles.headerIcon}>
           <Feather name="box" size={17} color={colors.primary} />
         </View>
         <View style={styles.fileDetails}>
-          <Text style={styles.eyebrow}>CAPTURE REVIEW</Text>
+          <Text style={styles.eyebrow}>
+            {processingMode
+              ? `${processingMode.toUpperCase()} · CAPTURE REVIEW`
+              : 'CAPTURE REVIEW'}
+          </Text>
           <Text style={styles.fileName} numberOfLines={1}>
             {fileName}
           </Text>
@@ -151,11 +246,82 @@ export function PlyScanPreview({
         <Text style={styles.fileSize}>{formatSize(fileSize)}</Text>
       </View>
 
+      {preview.status === 'ready' ? (
+        <View
+          style={styles.viewChoice}
+          accessibilityRole="radiogroup"
+          accessibilityLabel="Choose scan preview"
+        >
+          <Pressable
+            accessibilityRole="radio"
+            accessibilityState={{
+              selected: viewMode === 'solid',
+              disabled: !hasSolidSurface,
+            }}
+            testID="preview-mode-solid"
+            disabled={!hasSolidSurface}
+            onPress={() => setViewMode('solid')}
+            style={({ pressed }) => [
+              styles.viewChoiceButton,
+              viewMode === 'solid' && hasSolidSurface && styles.viewChoiceActive,
+              !hasSolidSurface && styles.viewChoiceDisabled,
+              pressed && hasSolidSurface && styles.pressed,
+            ]}
+          >
+            <Feather
+              name="box"
+              size={15}
+              color={
+                viewMode === 'solid' && hasSolidSurface
+                  ? colors.primary
+                  : colors.mutedForeground
+              }
+            />
+            <Text
+              style={[
+                styles.viewChoiceText,
+                viewMode === 'solid' && hasSolidSurface &&
+                  styles.viewChoiceTextActive,
+              ]}
+            >
+              Solid object
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="radio"
+            accessibilityState={{ selected: viewMode === 'points' }}
+            testID="preview-mode-points"
+            onPress={() => setViewMode('points')}
+            style={({ pressed }) => [
+              styles.viewChoiceButton,
+              viewMode === 'points' && styles.viewChoiceActive,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Feather
+              name="grid"
+              size={15}
+              color={
+                viewMode === 'points' ? colors.primary : colors.mutedForeground
+              }
+            />
+            <Text
+              style={[
+                styles.viewChoiceText,
+                viewMode === 'points' && styles.viewChoiceTextActive,
+              ]}
+            >
+              Point cloud
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       <View
-        style={styles.viewport}
+        style={[styles.viewport, fullScreen && styles.fullScreenViewport]}
         {...panResponder.panHandlers}
         accessibilityRole="image"
-        accessibilityLabel="3D point-cloud preview. Drag to rotate the scan."
+        accessibilityLabel={`3D ${viewMode === 'solid' && hasSolidSurface ? 'solid object' : 'point-cloud'} preview. Drag to rotate the scan.`}
       >
         {preview.status === 'loading' ? (
           <View style={styles.previewState}>
@@ -184,13 +350,28 @@ export function PlyScanPreview({
               strokeOpacity={0.4}
               strokeWidth={1}
             />
-            <Path
-              d={cloudPath}
-              fill="none"
-              stroke={colors.primary}
-              strokeLinecap="round"
-              strokeWidth={2}
-            />
+            {viewMode === 'solid' && hasSolidSurface ? (
+              facePaths.map((face, index) => (
+                <Path
+                  key={`face-${index}`}
+                  d={face.d}
+                  fill={colors.primary}
+                  fillOpacity={face.opacity}
+                  stroke={colors.primary}
+                  strokeOpacity={0.62}
+                  strokeWidth={0.45}
+                  strokeLinejoin="round"
+                />
+              ))
+            ) : (
+              <Path
+                d={cloudPath}
+                fill="none"
+                stroke={colors.primary}
+                strokeLinecap="round"
+                strokeWidth={2}
+              />
+            )}
           </Svg>
         )}
       </View>
@@ -201,7 +382,9 @@ export function PlyScanPreview({
             {preview.cloud.vertexCount.toLocaleString()} vertices
           </Text>
           <Text style={styles.pointCount}>
-            Showing {preview.cloud.points.length.toLocaleString()} points
+            {viewMode === 'solid' && hasSolidSurface
+              ? `Showing ${facePaths.length.toLocaleString()} of ${preview.cloud.faceCount.toLocaleString()} faces`
+              : `Showing ${preview.cloud.points.length.toLocaleString()} points`}
           </Text>
         </View>
       ) : (
@@ -212,8 +395,18 @@ export function PlyScanPreview({
         </Text>
       )}
 
+      {processingWarnings.map((warning, index) => (
+        <Text key={`processing-warning-${index}`} style={styles.processingWarning}>
+          {warning}
+        </Text>
+      ))}
+
       {preview.status === 'ready' ? (
-        <Text style={styles.hint}>Drag the scan to inspect it from different angles.</Text>
+        <Text style={styles.hint}>
+          {hasSolidSurface
+            ? 'Choose a view, then drag the scan to inspect it from different angles.'
+            : 'This scan contains points only, so a solid surface view is unavailable. Drag to rotate the point cloud.'}
+        </Text>
       ) : null}
 
       <View style={styles.actions}>
@@ -258,6 +451,14 @@ function createStyles(colors: ReturnType<typeof useColors>) {
       padding: 12,
       gap: 11,
     },
+    fullScreenCard: {
+      flex: 1,
+      borderWidth: 0,
+      borderRadius: 0,
+      backgroundColor: 'transparent',
+      padding: 0,
+      gap: 12,
+    },
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -300,6 +501,49 @@ function createStyles(colors: ReturnType<typeof useColors>) {
       borderRadius: 11,
       backgroundColor: colors.foreground,
     },
+    fullScreenViewport: {
+      flex: 1,
+      minHeight: 280,
+      height: 224,
+      borderRadius: 14,
+    },
+    viewChoice: {
+      minHeight: 44,
+      flexDirection: 'row',
+      gap: 4,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 11,
+      backgroundColor: colors.muted,
+      padding: 3,
+    },
+    viewChoiceButton: {
+      flex: 1,
+      minHeight: 36,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 7,
+      borderRadius: 8,
+      paddingHorizontal: 8,
+    },
+    viewChoiceActive: {
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.card,
+    },
+    viewChoiceDisabled: {
+      opacity: 0.5,
+    },
+    viewChoiceText: {
+      color: colors.mutedForeground,
+      fontFamily: 'DMSans_500Medium',
+      fontSize: 11,
+    },
+    viewChoiceTextActive: {
+      color: colors.foreground,
+      fontFamily: 'DMSans_600SemiBold',
+    },
     previewState: {
       alignItems: 'center',
       justifyContent: 'center',
@@ -333,6 +577,12 @@ function createStyles(colors: ReturnType<typeof useColors>) {
       color: colors.mutedForeground,
       fontFamily: 'DMSans_400Regular',
       fontSize: 11,
+    },
+    processingWarning: {
+      color: colors.primary,
+      fontFamily: 'DMSans_500Medium',
+      fontSize: 10,
+      lineHeight: 15,
     },
     hint: {
       color: colors.mutedForeground,
