@@ -186,6 +186,14 @@ paths:
       security:
         - bearerAuth: []
         - sessionCookie: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Optional UUID v4. Repeating a request with the same key returns the original scan record.
+          schema:
+            type: string
+            format: uuid
       requestBody:
         required: true
         content:
@@ -213,6 +221,12 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "403":
           description: Technician is not approved or the technician ID does not match the authenticated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: The idempotency key is already associated with another technician's scan.
           content:
             application/json:
               schema:
@@ -300,7 +314,8 @@ components:
         - status
     AuthUser:
       type: object
-      required: [id, email, firstName, lastName, profileImageUrl, isTechnician, isAdmin]
+      required:
+        [id, email, firstName, lastName, profileImageUrl, isTechnician, isAdmin]
       properties:
         id:
           type: string
@@ -434,7 +449,16 @@ components:
     ScanSummary:
       type: object
       required:
-        [id, moduleType, technicianId, timestamp, vesselAssetName, fileName, fileSize, uploadedAt]
+        [
+          id,
+          moduleType,
+          technicianId,
+          timestamp,
+          vesselAssetName,
+          fileName,
+          fileSize,
+          uploadedAt,
+        ]
       properties:
         id:
           type: string
@@ -463,4 +487,3 @@ components:
       properties:
         error:
           type: string
-

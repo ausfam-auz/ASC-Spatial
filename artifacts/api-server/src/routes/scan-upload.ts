@@ -2,56 +2,58 @@ import {
   ListScansResponse,
   UploadScanBody,
   UploadScanResponse,
-} from "@workspace/api-zod";
+} from '@workspace/api-zod';
 import {
   db,
   scanMetadataTable,
   scanUploadRateLimitsTable,
   usersTable,
-} from "@workspace/db";
-import { Storage } from "@google-cloud/storage";
-import { sql, desc, eq } from "drizzle-orm";
+} from '@workspace/db';
+import { Storage } from '@google-cloud/storage';
+import { sql, desc, eq } from 'drizzle-orm';
 import {
   Router,
   type IRouter,
   type NextFunction,
   type Request,
   type Response,
-} from "express";
-import multer, { type StorageEngine } from "multer";
-import { randomUUID } from "node:crypto";
-import { extname } from "node:path";
-import { isWorkspaceAdmin } from "../middlewares/requireAdmin";
+} from 'express';
+import multer, { type StorageEngine } from 'multer';
+import { randomUUID } from 'node:crypto';
+import { extname } from 'node:path';
+import { isWorkspaceAdmin } from '../middlewares/requireAdmin';
 
-const STORAGE_SIDECAR_ENDPOINT = "http://127.0.0.1:1106";
+const STORAGE_SIDECAR_ENDPOINT = 'http://127.0.0.1:1106';
 const objectStorageClient = new Storage({
   credentials: {
-    audience: "replit",
-    subject_token_type: "access_token",
+    audience: 'replit',
+    subject_token_type: 'access_token',
     token_url: `${STORAGE_SIDECAR_ENDPOINT}/token`,
-    type: "external_account",
+    type: 'external_account',
     credential_source: {
       url: `${STORAGE_SIDECAR_ENDPOINT}/credential`,
       format: {
-        type: "json",
-        subject_token_field_name: "access_token",
+        type: 'json',
+        subject_token_field_name: 'access_token',
       },
     },
-    universe_domain: "googleapis.com",
+    universe_domain: 'googleapis.com',
   },
-  projectId: "",
+  projectId: '',
 });
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const UPLOAD_RATE_WINDOW_MS = 15 * 60 * 1000;
 const UPLOAD_RATE_LIMIT = 20;
-const ALLOWED_EXTENSIONS = new Set([".ply", ".obj"]);
+const ALLOWED_EXTENSIONS = new Set(['.ply', '.obj']);
+const UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 class InvalidScanFileError extends Error {
   constructor() {
-    super("Only .ply and .obj files are accepted");
-    this.name = "InvalidScanFileError";
+    super('Only .ply and .obj files are accepted');
+    this.name = 'InvalidScanFileError';
   }
 }
 
@@ -61,7 +63,7 @@ class StorageUploadError extends Error {
     readonly timedOut: boolean,
   ) {
     super(message);
-    this.name = "StorageUploadError";
+    this.name = 'StorageUploadError';
   }
 }
 
@@ -71,16 +73,18 @@ function parsePrivateDirectory(): {
 } {
   const rawPath = process.env.PRIVATE_OBJECT_DIR;
   if (!rawPath) {
-    throw new Error("App Storage is not configured: PRIVATE_OBJECT_DIR is missing");
+    throw new Error(
+      'App Storage is not configured: PRIVATE_OBJECT_DIR is missing',
+    );
   }
 
-  const parts = rawPath.split("/").filter(Boolean);
+  const parts = rawPath.split('/').filter(Boolean);
   const bucketName = parts.shift();
   if (!bucketName || parts.length === 0) {
-    throw new Error("App Storage private directory has an invalid format");
+    throw new Error('App Storage private directory has an invalid format');
   }
 
-  return { bucketName, prefix: parts.join("/") };
+  return { bucketName, prefix: parts.join('/') };
 }
 
 function getIdleTimeoutMs(): number {
@@ -107,7 +111,11 @@ class AppStorageStreamEngine implements StorageEngine {
       destination = bucketName;
       objectName = `${prefix}/asc-spatial-scans/${randomUUID()}${extname(file.originalname).toLowerCase()}`;
     } catch (error) {
-      callback(error instanceof Error ? error : new Error("App Storage configuration failed"));
+      callback(
+        error instanceof Error
+          ? error
+          : new Error('App Storage configuration failed'),
+      );
       return;
     }
 
@@ -129,8 +137,7 @@ class AppStorageStreamEngine implements StorageEngine {
 
     const logAndCleanup = (error: Error) => {
       const tooLarge =
-        error instanceof multer.MulterError &&
-        error.code === "LIMIT_FILE_SIZE";
+        error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE';
       const timedOut =
         error instanceof StorageUploadError
           ? error.timedOut
@@ -138,20 +145,22 @@ class AppStorageStreamEngine implements StorageEngine {
 
       if (tooLarge) {
         req.log.warn(
-          { objectPath: `/objects/asc-spatial-scans/${objectName.split("/").at(-1)}` },
-          "Scan upload exceeded the 100 MiB file limit",
+          {
+            objectPath: `/objects/asc-spatial-scans/${objectName.split('/').at(-1)}`,
+          },
+          'Scan upload exceeded the 100 MiB file limit',
         );
       } else {
         req.log.error(
           {
             errorName: error.name,
-            errorCode: "code" in error ? error.code : undefined,
+            errorCode: 'code' in error ? error.code : undefined,
             networkTimeout: timedOut,
-            objectPath: `/objects/asc-spatial-scans/${objectName.split("/").at(-1)}`,
+            objectPath: `/objects/asc-spatial-scans/${objectName.split('/').at(-1)}`,
           },
           timedOut
-            ? "App Storage upload timed out on the network"
-            : "App Storage upload stream failed",
+            ? 'App Storage upload timed out on the network'
+            : 'App Storage upload stream failed',
         );
       }
 
@@ -163,9 +172,9 @@ class AppStorageStreamEngine implements StorageEngine {
               errorName:
                 cleanupError instanceof Error
                   ? cleanupError.name
-                  : "UnknownError",
+                  : 'UnknownError',
             },
-            "Could not remove incomplete scan object",
+            'Could not remove incomplete scan object',
           );
         })
         .finally(() =>
@@ -175,8 +184,8 @@ class AppStorageStreamEngine implements StorageEngine {
               ? error
               : new StorageUploadError(
                   timedOut
-                    ? "App Storage upload timed out"
-                    : "App Storage upload failed",
+                    ? 'App Storage upload timed out'
+                    : 'App Storage upload failed',
                   timedOut,
                 ),
           ),
@@ -185,10 +194,10 @@ class AppStorageStreamEngine implements StorageEngine {
 
     const writeStream = objectFile.createWriteStream({
       resumable: true,
-      validation: "crc32c",
+      validation: 'crc32c',
       metadata: {
-        contentType: file.mimetype || "application/octet-stream",
-        metadata: { source: "asc-spatial-scans" },
+        contentType: file.mimetype || 'application/octet-stream',
+        metadata: { source: 'asc-spatial-scans' },
       },
     });
 
@@ -205,19 +214,19 @@ class AppStorageStreamEngine implements StorageEngine {
     };
 
     resetIdleTimer();
-    file.stream.on("data", (chunk: Buffer | string) => {
+    file.stream.on('data', (chunk: Buffer | string) => {
       fileSize += Buffer.byteLength(chunk);
       resetIdleTimer();
     });
-    file.stream.once("limit", () => {
-      writeStream.destroy(new multer.MulterError("LIMIT_FILE_SIZE"));
+    file.stream.once('limit', () => {
+      writeStream.destroy(new multer.MulterError('LIMIT_FILE_SIZE'));
     });
-    file.stream.once("error", (error: Error) => {
+    file.stream.once('error', (error: Error) => {
       writeStream.destroy(error);
     });
-    writeStream.once("error", logAndCleanup);
-    writeStream.once("finish", () => {
-      const filename = objectName.split("/").at(-1) ?? objectName;
+    writeStream.once('error', logAndCleanup);
+    writeStream.once('finish', () => {
+      const filename = objectName.split('/').at(-1) ?? objectName;
       finish(null, {
         destination,
         filename: objectName,
@@ -256,8 +265,8 @@ const upload = multer({
     const extension = extname(file.originalname).toLowerCase();
     if (!ALLOWED_EXTENSIONS.has(extension)) {
       req.log.warn(
-        { extension: extension || "(none)" },
-        "Rejected scan upload with an unsupported file extension",
+        { extension: extension || '(none)' },
+        'Rejected scan upload with an unsupported file extension',
       );
       callback(new InvalidScanFileError());
       return;
@@ -269,11 +278,11 @@ const upload = multer({
 const router: IRouter = Router();
 
 router.get(
-  "/v1/scans",
+  '/v1/scans',
   requireTechnician,
   async (req: Request, res: Response): Promise<void> => {
     if (!req.dbUser) {
-      res.status(401).json({ error: "Authentication required" });
+      res.status(401).json({ error: 'Authentication required' });
       return;
     }
 
@@ -301,12 +310,14 @@ router.get(
         /timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(error.message);
       req.log.error(
         {
-          errorName: error instanceof Error ? error.name : "UnknownError",
+          errorName: error instanceof Error ? error.name : 'UnknownError',
           networkTimeout: isTimeout,
         },
-        "Failed to load recent technician scans",
+        'Failed to load recent technician scans',
       );
-      res.status(503).json({ error: "Scan history is temporarily unavailable" });
+      res
+        .status(503)
+        .json({ error: 'Scan history is temporarily unavailable' });
     }
   },
 );
@@ -317,7 +328,7 @@ async function requireTechnician(
   next: NextFunction,
 ): Promise<void> {
   if (!req.dbUser) {
-    res.status(401).json({ error: "Authentication required" });
+    res.status(401).json({ error: 'Authentication required' });
     return;
   }
 
@@ -329,16 +340,75 @@ async function requireTechnician(
       .limit(1);
 
     if (!user?.isTechnician && !isWorkspaceAdmin(req.dbUser.email)) {
-      res.status(403).json({ error: "Technician account is not approved" });
+      res.status(403).json({ error: 'Technician account is not approved' });
       return;
     }
     next();
   } catch (error) {
     req.log.error(
-      { errorName: error instanceof Error ? error.name : "UnknownError" },
-      "Could not verify technician permissions",
+      { errorName: error instanceof Error ? error.name : 'UnknownError' },
+      'Could not verify technician permissions',
     );
-    res.status(503).json({ error: "Could not verify upload permissions" });
+    res.status(503).json({ error: 'Could not verify upload permissions' });
+  }
+}
+
+async function resolveScanUploadIdempotency(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const headerValue = req.get('Idempotency-Key');
+  const uploadId = headerValue?.trim() || randomUUID();
+
+  if (!UUID_V4_PATTERN.test(uploadId)) {
+    res.status(400).json({ error: 'Idempotency-Key must be a UUID v4' });
+    return;
+  }
+
+  res.locals.scanUploadId = uploadId;
+  if (!headerValue) {
+    next();
+    return;
+  }
+
+  if (!req.dbUser) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+
+  try {
+    const [existing] = await db
+      .select({
+        id: scanMetadataTable.id,
+        uploadedBy: scanMetadataTable.uploadedBy,
+      })
+      .from(scanMetadataTable)
+      .where(eq(scanMetadataTable.id, uploadId))
+      .limit(1);
+
+    if (!existing) {
+      next();
+      return;
+    }
+    if (existing.uploadedBy !== req.dbUser.id) {
+      res.status(409).json({ error: 'Idempotency-Key is already in use' });
+      return;
+    }
+
+    res.status(200).json(UploadScanResponse.parse({ id: existing.id }));
+  } catch (error) {
+    const isTimeout =
+      error instanceof Error &&
+      /timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(error.message);
+    req.log.error(
+      {
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+        networkTimeout: isTimeout,
+      },
+      'Could not check scan upload idempotency',
+    );
+    res.status(503).json({ error: 'Upload status is temporarily unavailable' });
   }
 }
 
@@ -348,14 +418,13 @@ async function applyScanUploadRateLimit(
   next: NextFunction,
 ): Promise<void> {
   if (!req.dbUser) {
-    res.status(401).json({ error: "Authentication required" });
+    res.status(401).json({ error: 'Authentication required' });
     return;
   }
 
   const now = new Date();
   const windowStart = new Date(
-    Math.floor(now.getTime() / UPLOAD_RATE_WINDOW_MS) *
-      UPLOAD_RATE_WINDOW_MS,
+    Math.floor(now.getTime() / UPLOAD_RATE_WINDOW_MS) * UPLOAD_RATE_WINDOW_MS,
   );
 
   try {
@@ -387,21 +456,26 @@ async function applyScanUploadRateLimit(
         ),
       );
       req.log.warn(
-        { limit: UPLOAD_RATE_LIMIT, windowSeconds: UPLOAD_RATE_WINDOW_MS / 1000 },
-        "Technician scan upload rate limit exceeded",
+        {
+          limit: UPLOAD_RATE_LIMIT,
+          windowSeconds: UPLOAD_RATE_WINDOW_MS / 1000,
+        },
+        'Technician scan upload rate limit exceeded',
       );
-      res.setHeader("Retry-After", String(retryAfter));
-      res.status(429).json({ error: "Upload rate limit exceeded" });
+      res.setHeader('Retry-After', String(retryAfter));
+      res.status(429).json({ error: 'Upload rate limit exceeded' });
       return;
     }
 
     next();
   } catch (error) {
     req.log.error(
-      { errorName: error instanceof Error ? error.name : "UnknownError" },
-      "Scan upload rate-limit check failed",
+      { errorName: error instanceof Error ? error.name : 'UnknownError' },
+      'Scan upload rate-limit check failed',
     );
-    res.status(503).json({ error: "Upload protection is temporarily unavailable" });
+    res
+      .status(503)
+      .json({ error: 'Upload protection is temporarily unavailable' });
   }
 }
 
@@ -410,21 +484,23 @@ function parseMultipart(
   res: Response,
   next: (error?: unknown) => void,
 ): void {
-  upload.single("file")(req, res, (error: unknown) => {
+  upload.single('file')(req, res, (error: unknown) => {
     if (!error) {
       next();
       return;
     }
 
     if (error instanceof multer.MulterError) {
-      const tooLarge = error.code === "LIMIT_FILE_SIZE";
+      const tooLarge = error.code === 'LIMIT_FILE_SIZE';
       req.log.warn(
         { multerCode: error.code },
-        tooLarge ? "Scan upload exceeded the 100 MiB file limit" : "Invalid scan multipart request",
+        tooLarge
+          ? 'Scan upload exceeded the 100 MiB file limit'
+          : 'Invalid scan multipart request',
       );
-      res
-        .status(tooLarge ? 413 : 400)
-        .json({ error: tooLarge ? "File exceeds the 100 MiB limit" : error.message });
+      res.status(tooLarge ? 413 : 400).json({
+        error: tooLarge ? 'File exceeds the 100 MiB limit' : error.message,
+      });
       return;
     }
 
@@ -434,17 +510,19 @@ function parseMultipart(
     }
 
     if (error instanceof StorageUploadError) {
-      res
-        .status(503)
-        .json({ error: error.timedOut ? "Storage upload timed out" : "Storage service unavailable" });
+      res.status(503).json({
+        error: error.timedOut
+          ? 'Storage upload timed out'
+          : 'Storage service unavailable',
+      });
       return;
     }
 
     req.log.error(
-      { errorName: error instanceof Error ? error.name : "UnknownError" },
-      "Scan upload could not be stored",
+      { errorName: error instanceof Error ? error.name : 'UnknownError' },
+      'Scan upload could not be stored',
     );
-    res.status(503).json({ error: "Storage service unavailable" });
+    res.status(503).json({ error: 'Storage service unavailable' });
   });
 }
 
@@ -457,18 +535,19 @@ async function removeStoredObject(file: Express.Multer.File): Promise<void> {
 }
 
 router.post(
-  "/v1/scan/upload",
+  '/v1/scan/upload',
   requireTechnician,
+  resolveScanUploadIdempotency,
   applyScanUploadRateLimit,
   parseMultipart,
   async (req: Request, res: Response): Promise<void> => {
     if (!req.dbUser) {
-      res.status(401).json({ error: "Authentication required" });
+      res.status(401).json({ error: 'Authentication required' });
       return;
     }
 
     if (!req.file) {
-      res.status(400).json({ error: "A .ply or .obj file is required" });
+      res.status(400).json({ error: 'A .ply or .obj file is required' });
       return;
     }
 
@@ -476,24 +555,27 @@ router.post(
     if (!parsed.success) {
       await removeStoredObject(req.file).catch((error: unknown) => {
         req.log.error(
-          { errorName: error instanceof Error ? error.name : "UnknownError" },
-          "Failed to remove scan after metadata validation error",
+          { errorName: error instanceof Error ? error.name : 'UnknownError' },
+          'Failed to remove scan after metadata validation error',
         );
       });
-      req.log.warn({ validationError: parsed.error.message }, "Invalid scan metadata");
-      res.status(400).json({ error: "Invalid scan metadata" });
+      req.log.warn(
+        { validationError: parsed.error.message },
+        'Invalid scan metadata',
+      );
+      res.status(400).json({ error: 'Invalid scan metadata' });
       return;
     }
 
     if (parsed.data.technicianId !== req.dbUser.id) {
       await removeStoredObject(req.file).catch((error: unknown) => {
         req.log.error(
-          { errorName: error instanceof Error ? error.name : "UnknownError" },
-          "Failed to remove scan with technician identity mismatch",
+          { errorName: error instanceof Error ? error.name : 'UnknownError' },
+          'Failed to remove scan with technician identity mismatch',
         );
       });
       res.status(403).json({
-        error: "Technician ID must match the authenticated account ID",
+        error: 'Technician ID must match the authenticated account ID',
       });
       return;
     }
@@ -504,10 +586,10 @@ router.post(
     } catch (error) {
       await removeStoredObject(req.file).catch(() => undefined);
       req.log.error(
-        { errorName: error instanceof Error ? error.name : "UnknownError" },
-        "App Storage configuration is unavailable",
+        { errorName: error instanceof Error ? error.name : 'UnknownError' },
+        'App Storage configuration is unavailable',
       );
-      res.status(503).json({ error: "Storage service unavailable" });
+      res.status(503).json({ error: 'Storage service unavailable' });
       return;
     }
 
@@ -517,12 +599,14 @@ router.post(
       path: string;
       size: number;
     };
+    const scanUploadId = res.locals.scanUploadId as string;
     const storageUrl = `https://storage.googleapis.com/${bucketName}/${storedFile.filename}`;
 
     try {
       const [record] = await db
         .insert(scanMetadataTable)
         .values({
+          id: scanUploadId,
           moduleType: parsed.data.moduleType,
           technicianId: parsed.data.technicianId,
           timestamp: parsed.data.timestamp,
@@ -533,14 +617,50 @@ router.post(
           fileSize: storedFile.size,
           uploadedBy: req.dbUser.id,
         })
+        .onConflictDoNothing({ target: scanMetadataTable.id })
         .returning({ id: scanMetadataTable.id });
 
-      res.status(200).json(UploadScanResponse.parse({ id: record.id }));
+      if (record) {
+        res.status(200).json(UploadScanResponse.parse({ id: record.id }));
+        return;
+      }
+
+      const [existing] = await db
+        .select({
+          id: scanMetadataTable.id,
+          uploadedBy: scanMetadataTable.uploadedBy,
+        })
+        .from(scanMetadataTable)
+        .where(eq(scanMetadataTable.id, scanUploadId))
+        .limit(1);
+      await removeStoredObject(req.file).catch((cleanupError: unknown) => {
+        req.log.error(
+          {
+            errorName:
+              cleanupError instanceof Error
+                ? cleanupError.name
+                : 'UnknownError',
+          },
+          'Failed to remove duplicate scan upload object',
+        );
+      });
+
+      if (existing?.uploadedBy === req.dbUser.id) {
+        res.status(200).json(UploadScanResponse.parse({ id: existing.id }));
+        return;
+      }
+
+      res.status(409).json({ error: 'Idempotency-Key is already in use' });
     } catch (error) {
       await removeStoredObject(req.file).catch((cleanupError: unknown) => {
         req.log.error(
-          { errorName: cleanupError instanceof Error ? cleanupError.name : "UnknownError" },
-          "Failed to remove scan after database insert failure",
+          {
+            errorName:
+              cleanupError instanceof Error
+                ? cleanupError.name
+                : 'UnknownError',
+          },
+          'Failed to remove scan after database insert failure',
         );
       });
       const isTimeout =
@@ -548,16 +668,18 @@ router.post(
         /timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(error.message);
       req.log.error(
         {
-          errorName: error instanceof Error ? error.name : "UnknownError",
+          errorName: error instanceof Error ? error.name : 'UnknownError',
           networkTimeout: isTimeout,
         },
         isTimeout
-          ? "Database operation timed out during scan upload"
-          : "Failed to save scan metadata",
+          ? 'Database operation timed out during scan upload'
+          : 'Failed to save scan metadata',
       );
-      res
-        .status(isTimeout ? 503 : 500)
-        .json({ error: isTimeout ? "Database operation timed out" : "Could not save scan metadata" });
+      res.status(isTimeout ? 503 : 500).json({
+        error: isTimeout
+          ? 'Database operation timed out'
+          : 'Could not save scan metadata',
+      });
     }
   },
 );

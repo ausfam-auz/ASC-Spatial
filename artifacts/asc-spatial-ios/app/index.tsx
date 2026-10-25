@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -21,7 +21,6 @@ import {
   getListScansQueryKey,
   useHealthCheck,
   useListScans,
-  useUploadScan,
   type ScanSummary,
 } from '@workspace/api-client-react';
 import { KeyboardAwareScrollViewCompat } from '@/components/KeyboardAwareScrollViewCompat';
@@ -30,10 +29,9 @@ import { useColors } from '@/hooks/useColors';
 import { useAuth } from '@clerk/expo';
 import { useGetAccount } from '@workspace/api-client-react';
 import { router } from 'expo-router';
-import {
-  lidarScanner,
-  type LidarDeviceStatus,
-} from '@/lib/lidarScanner';
+import { lidarScanner, type LidarDeviceStatus } from '@/lib/lidarScanner';
+import { scanUploadQueue } from '@/lib/scanUploadQueue';
+import type { ScanUploadQueueItem } from '@/lib/scanUploadQueueCore';
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const MODULE_TYPES = ['DeckOps', 'ToolingAudit'] as const;
@@ -50,12 +48,15 @@ interface SelectedScanFile {
 }
 
 function localDateTimeValue(date = new Date()): string {
-  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  const localDate = new Date(
+    date.getTime() - date.getTimezoneOffset() * 60_000,
+  );
   return localDate.toISOString().slice(0, 16);
 }
 
 function formatSize(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KiB`;
+  if (bytes < 1024 * 1024)
+    return `${Math.max(1, Math.round(bytes / 1024))} KiB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
@@ -75,6 +76,23 @@ function scanExtension(name: string): string {
   return name.split('.').pop()?.toLowerCase() ?? '';
 }
 
+function uploadQueueStatusLabel(item: ScanUploadQueueItem): string {
+  switch (item.state) {
+    case 'uploading':
+      return 'Sending scan…';
+    case 'failed':
+      return 'Failed after several attempts';
+    case 'sent':
+      return item.serverRecordId
+        ? `Sent · ${item.serverRecordId.slice(0, 8)}`
+        : 'Sent';
+    default:
+      return item.attempts > 0
+        ? `Waiting to retry · attempt ${item.attempts + 1} of 6`
+        : 'Pending · saved on this device';
+  }
+}
+
 function discardGeneratedScan(file: SelectedScanFile | null): void {
   if (file?.source !== 'lidar') return;
   try {
@@ -84,7 +102,13 @@ function discardGeneratedScan(file: SelectedScanFile | null): void {
   }
 }
 
-function ScanRecord({ scan, colors }: { scan: ScanSummary; colors: ReturnType<typeof useColors> }) {
+function ScanRecord({
+  scan,
+  colors,
+}: {
+  scan: ScanSummary;
+  colors: ReturnType<typeof useColors>;
+}) {
   const styles = useMemo(() => createStyles(colors), [colors]);
   const extension = scanExtension(scan.fileName);
   return (
@@ -114,25 +138,49 @@ export default function ScanWorkspaceScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const { isLoaded, isSignedIn, signOut } = useAuth();
-  const account = useGetAccount({ query: { enabled: isLoaded && !!isSignedIn, retry: false, staleTime: 0, refetchInterval: 30_000, refetchOnWindowFocus: true } });
+  const account = useGetAccount({
+    query: {
+      enabled: isLoaded && !!isSignedIn,
+      retry: false,
+      staleTime: 0,
+      refetchInterval: 30_000,
+      refetchOnWindowFocus: true,
+    },
+  });
   // The server has already resolved the session to the correct local account.
   const user = account.data?.user ?? null;
   const authLoading = !isLoaded || (!!isSignedIn && account.isLoading);
   const isAuthenticated = !!isSignedIn;
   const authError = account.error?.message ?? null;
   const login = () => router.push('/sign-in');
-  const logout = async () => { await signOut(); router.replace('/'); };
+  const logout = async () => {
+    await signOut();
+    router.replace('/');
+  };
   const [moduleType, setModuleType] = useState<ModuleType>('DeckOps');
   const [vesselAssetName, setVesselAssetName] = useState('');
-  const [inspectionTime, setInspectionTime] = useState(() => localDateTimeValue());
-  const [selectedFile, setSelectedFile] = useState<SelectedScanFile | null>(null);
+  const [inspectionTime, setInspectionTime] = useState(() =>
+    localDateTimeValue(),
+  );
+  const [selectedFile, setSelectedFile] = useState<SelectedScanFile | null>(
+    null,
+  );
   const [pendingCapturePreview, setPendingCapturePreview] =
     useState<SelectedScanFile | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [lastUploadedId, setLastUploadedId] = useState<string | null>(null);
+  const [queueNotice, setQueueNotice] = useState<string | null>(null);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  const [queueItems, setQueueItems] = useState<ScanUploadQueueItem[]>([]);
+  const [isQueueing, setIsQueueing] = useState(false);
+  const noticedSentUploads = useRef(new Set<string>());
   const [isPicking, setIsPicking] = useState(false);
-  const [lidarStatus, setLidarStatus] = useState<LidarDeviceStatus | null>(null);
-  const [capturePhase, setCapturePhase] = useState<'idle' | 'capturing' | 'compressing'>('idle');
+  const [lidarStatus, setLidarStatus] = useState<LidarDeviceStatus | null>(
+    null,
+  );
+  const [capturePhase, setCapturePhase] = useState<
+    'idle' | 'capturing' | 'compressing'
+  >('idle');
   const [captureProgress, setCaptureProgress] = useState(0);
   const [captureMeshCount, setCaptureMeshCount] = useState(0);
   const [compressionStage, setCompressionStage] = useState('');
@@ -152,18 +200,23 @@ export default function ScanWorkspaceScreen() {
       setCaptureProgress(event.progress);
       setCaptureMeshCount(event.meshCount);
     });
-    const compressionSubscription = lidarScanner.onCompressionProgress((event) => {
-      setCaptureProgress(event.progress);
-      setCompressionStage(event.stage);
-    });
-    const appStateSubscription = AppState.addEventListener('change', (state) => {
-      if (state !== 'active') return;
-      try {
-        setLidarStatus(lidarScanner.getDeviceStatus());
-      } catch {
-        // Keep the last known device state if the native module is unavailable.
-      }
-    });
+    const compressionSubscription = lidarScanner.onCompressionProgress(
+      (event) => {
+        setCaptureProgress(event.progress);
+        setCompressionStage(event.stage);
+      },
+    );
+    const appStateSubscription = AppState.addEventListener(
+      'change',
+      (state) => {
+        if (state !== 'active') return;
+        try {
+          setLidarStatus(lidarScanner.getDeviceStatus());
+        } catch {
+          // Keep the last known device state if the native module is unavailable.
+        }
+      },
+    );
     return () => {
       captureSubscription?.remove();
       compressionSubscription?.remove();
@@ -171,9 +224,12 @@ export default function ScanWorkspaceScreen() {
     };
   }, []);
 
-  useEffect(() => () => {
-    lidarScanner.cancelCapture();
-  }, []);
+  useEffect(
+    () => () => {
+      lidarScanner.cancelCapture();
+    },
+    [],
+  );
 
   const health = useHealthCheck();
   const canAccessScans = Boolean(
@@ -185,17 +241,131 @@ export default function ScanWorkspaceScreen() {
       enabled: canAccessScans,
     },
   });
-  const upload = useUploadScan();
   const scans = scansQuery.data?.scans ?? [];
   const serviceLabel = health.isError
     ? 'API unavailable'
     : health.isLoading
       ? 'Connecting'
-      : health.data?.status ?? 'API connected';
+      : (health.data?.status ?? 'API connected');
   const serviceColor = health.isError ? colors.destructive : colors.primary;
-  const topInset = Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top;
+  const topInset =
+    Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top;
   const bottomInset =
     Platform.OS === 'web' ? Math.max(insets.bottom, 34) : insets.bottom;
+  const currentQueueItems = queueItems
+    .filter((item) => item.technicianId === user?.id)
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, 6);
+
+  useEffect(() => {
+    let mounted = true;
+    const unsubscribe = scanUploadQueue.subscribe((items) => {
+      if (mounted) setQueueItems(items);
+    });
+    void scanUploadQueue
+      .load()
+      .then(() => {
+        if (mounted) setQueueError(null);
+      })
+      .catch(() => {
+        if (mounted) {
+          setQueueError(
+            'Saved uploads could not be read from this device. Keep the app installed and try again.',
+          );
+        }
+      });
+
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS === 'web' || !canAccessScans || !user?.id) return;
+    let active = true;
+    let running = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleNextAttempt = () => {
+      if (!active || running) return;
+      if (retryTimer) clearTimeout(retryTimer);
+      const delay = scanUploadQueue.nextRetryDelay(user.id);
+      if (delay === null) {
+        retryTimer = null;
+        return;
+      }
+      retryTimer = setTimeout(
+        () => {
+          retryTimer = null;
+          void flushQueue();
+        },
+        Math.max(250, delay),
+      );
+    };
+
+    const flushQueue = async () => {
+      if (!active || running) return;
+      running = true;
+      try {
+        await scanUploadQueue.flushDue(user.id);
+        setQueueError(null);
+      } catch {
+        setQueueError(
+          'The upload queue could not be saved. Your selected scan has not been removed.',
+        );
+      } finally {
+        running = false;
+        scheduleNextAttempt();
+      }
+    };
+
+    const unsubscribe = scanUploadQueue.subscribe(scheduleNextAttempt);
+    const appStateSubscription = AppState.addEventListener(
+      'change',
+      (state) => {
+        if (state !== 'active') return;
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = null;
+        void flushQueue();
+      },
+    );
+
+    void scanUploadQueue
+      .load()
+      .then(flushQueue)
+      .catch(() => {
+        setQueueError(
+          'Saved uploads could not be read from this device. Keep the app installed and try again.',
+        );
+      });
+
+    return () => {
+      active = false;
+      if (retryTimer) clearTimeout(retryTimer);
+      unsubscribe();
+      appStateSubscription.remove();
+    };
+  }, [canAccessScans, user?.id]);
+
+  useEffect(() => {
+    const newlySent = queueItems.find(
+      (item) =>
+        item.technicianId === user?.id &&
+        item.state === 'sent' &&
+        item.serverRecordId &&
+        !noticedSentUploads.current.has(item.id),
+    );
+    if (!newlySent?.serverRecordId) return;
+
+    noticedSentUploads.current.add(newlySent.id);
+    setLastUploadedId(newlySent.serverRecordId);
+    setQueueNotice(null);
+    void queryClient.invalidateQueries({
+      queryKey: getListScansQueryKey(),
+    });
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  }, [queueItems, queryClient, user?.id]);
 
   async function pickFile() {
     setFormError(null);
@@ -253,7 +423,9 @@ export default function ScanWorkspaceScreen() {
         setFormError(null);
       }
     } catch {
-      setFormError('Camera permission could not be requested. Please try again.');
+      setFormError(
+        'Camera permission could not be requested. Please try again.',
+      );
     }
   }
 
@@ -284,11 +456,15 @@ export default function ScanWorkspaceScreen() {
       const result = await lidarScanner.finishCapture();
       if (result.size > MAX_FILE_SIZE) {
         lidarScanner.removeCapturedFile(result.uri);
-        throw new Error('The compressed scan exceeds the 100 MiB upload limit.');
+        throw new Error(
+          'The compressed scan exceeds the 100 MiB upload limit.',
+        );
       }
       if (scanExtension(result.name) !== 'ply') {
         lidarScanner.removeCapturedFile(result.uri);
-        throw new Error('The captured scan is not a PLY file. Please capture again.');
+        throw new Error(
+          'The captured scan is not a PLY file. Please capture again.',
+        );
       }
       setPendingCapturePreview({
         uri: result.uri,
@@ -340,13 +516,22 @@ export default function ScanWorkspaceScreen() {
     try {
       await Linking.openSettings();
     } catch {
-      setFormError('Settings could not be opened. Enable camera access in iOS Settings.');
+      setFormError(
+        'Settings could not be opened. Enable camera access in iOS Settings.',
+      );
     }
   }
 
-  function submitUpload() {
+  async function submitUpload() {
     setFormError(null);
     setLastUploadedId(null);
+
+    if (Platform.OS === 'web') {
+      setFormError(
+        'Use the ASC Spatial web app for browser uploads. Offline-safe queuing is available in the native iOS app.',
+      );
+      return;
+    }
 
     if (!user?.isTechnician && !user?.isAdmin) {
       setFormError('Your account is not approved for field uploads.');
@@ -371,40 +556,54 @@ export default function ScanWorkspaceScreen() {
     }
 
     const fileToUpload = selectedFile;
-    upload.mutate(
-      {
-        data: {
-          moduleType,
-          technicianId: user.id,
-          timestamp: parsedTime.toISOString(),
-          vesselAssetName: vesselAssetName.trim(),
-          file: new File(selectedFile.uri),
-        },
-      },
-      {
-        onSuccess: async ({ id }) => {
-          discardGeneratedScan(fileToUpload);
-          setLastUploadedId(id);
-          setSelectedFile(null);
-          setVesselAssetName('');
-          setInspectionTime(localDateTimeValue());
-          await queryClient.invalidateQueries({
-            queryKey: getListScansQueryKey(),
-          });
-          void Haptics.notificationAsync(
-            Haptics.NotificationFeedbackType.Success,
-          );
-        },
-        onError: () => {
-          setFormError(
-            'Upload did not complete. Check your connection and retry; the server will verify the file and save the record.',
-          );
-          void Haptics.notificationAsync(
-            Haptics.NotificationFeedbackType.Error,
-          );
-        },
-      },
-    );
+    const fileSize = selectedFile.size ?? new File(selectedFile.uri).size;
+    if (!Number.isFinite(fileSize) || fileSize < 0) {
+      setFormError('The scan file size could not be determined.');
+      return;
+    }
+
+    setIsQueueing(true);
+    try {
+      await scanUploadQueue.enqueue({
+        sourceUri: selectedFile.uri,
+        fileName: selectedFile.name,
+        fileSize,
+        moduleType,
+        technicianId: user.id,
+        timestamp: parsedTime.toISOString(),
+        vesselAssetName: vesselAssetName.trim(),
+      });
+      discardGeneratedScan(fileToUpload);
+      setSelectedFile(null);
+      setVesselAssetName('');
+      setInspectionTime(localDateTimeValue());
+      setQueueNotice(
+        'Scan saved on this device. It will upload now or retry automatically when the connection returns.',
+      );
+      setQueueError(null);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : 'The scan could not be saved on this device. Keep it selected and try again.',
+      );
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setIsQueueing(false);
+    }
+  }
+
+  async function retryQueuedScan(id: string) {
+    if (!user?.id) return;
+    try {
+      const retried = await scanUploadQueue.retry(id, user.id);
+      if (retried) await scanUploadQueue.flushDue(user.id);
+    } catch {
+      setQueueError(
+        'The scan could not be retried. Its local copy is still saved.',
+      );
+    }
   }
 
   function renderHeader() {
@@ -436,7 +635,9 @@ export default function ScanWorkspaceScreen() {
             </Pressable>
           ) : null}
           <View style={styles.connection}>
-            <View style={[styles.statusDot, { backgroundColor: serviceColor }]} />
+            <View
+              style={[styles.statusDot, { backgroundColor: serviceColor }]}
+            />
             <Text style={styles.connectionText}>{serviceLabel}</Text>
           </View>
         </View>
@@ -446,7 +647,12 @@ export default function ScanWorkspaceScreen() {
 
   if (authLoading) {
     return (
-      <View style={[styles.centerPage, { paddingTop: topInset, paddingBottom: bottomInset }]}>
+      <View
+        style={[
+          styles.centerPage,
+          { paddingTop: topInset, paddingBottom: bottomInset },
+        ]}
+      >
         <ActivityIndicator color={colors.primary} />
         <Text style={styles.centerText}>Checking secure session…</Text>
       </View>
@@ -473,13 +679,15 @@ export default function ScanWorkspaceScreen() {
             resizeMode="cover"
           />
           <Text style={styles.eyebrow}>FIELD OPERATIONS / 01</Text>
-          <Text style={styles.title}>Scan intake,{"\n"}made reliable.</Text>
+          <Text style={styles.title}>Scan intake,{'\n'}made reliable.</Text>
           <Text style={styles.intro}>
             Sign in with your approved field account to send compressed 3D scans
             and inspection details.
           </Text>
         </View>
-        {authError ? <InlineNotice message={authError} tone="error" colors={colors} /> : null}
+        {authError ? (
+          <InlineNotice message={authError} tone="error" colors={colors} />
+        ) : null}
         <Pressable
           accessibilityRole="button"
           testID="sign-in-button"
@@ -490,7 +698,11 @@ export default function ScanWorkspaceScreen() {
           ]}
         >
           <Text style={styles.primaryButtonText}>Sign in securely</Text>
-          <Feather name="arrow-up-right" size={18} color={colors.primaryForeground} />
+          <Feather
+            name="arrow-up-right"
+            size={18}
+            color={colors.primaryForeground}
+          />
         </Pressable>
         <Text style={styles.footnote}>
           {Platform.OS === 'web'
@@ -502,7 +714,23 @@ export default function ScanWorkspaceScreen() {
   }
 
   if (account.isError) {
-    return <View style={[styles.page, { paddingTop: topInset + 24, paddingHorizontal: 24 }]}><Text style={styles.title}>Account unavailable</Text><Text style={styles.intro}>{authError}</Text><Pressable onPress={() => void account.refetch()}><Text style={styles.cardTitle}>Retry</Text></Pressable><Pressable onPress={() => void logout()}><Text style={styles.cardTitle}>Sign out</Text></Pressable></View>;
+    return (
+      <View
+        style={[
+          styles.page,
+          { paddingTop: topInset + 24, paddingHorizontal: 24 },
+        ]}
+      >
+        <Text style={styles.title}>Account unavailable</Text>
+        <Text style={styles.intro}>{authError}</Text>
+        <Pressable onPress={() => void account.refetch()}>
+          <Text style={styles.cardTitle}>Retry</Text>
+        </Pressable>
+        <Pressable onPress={() => void logout()}>
+          <Text style={styles.cardTitle}>Sign out</Text>
+        </Pressable>
+      </View>
+    );
   }
   if (!user?.isTechnician && !user?.isAdmin) {
     return (
@@ -516,11 +744,11 @@ export default function ScanWorkspaceScreen() {
         {renderHeader()}
         <View style={styles.hero}>
           <Text style={styles.eyebrow}>ACCOUNT STATUS</Text>
-          <Text style={styles.title}>Approval{"\n"}in progress.</Text>
+          <Text style={styles.title}>Approval{'\n'}in progress.</Text>
           <Text style={styles.intro}>
             You’re signed in, but this account is not yet enabled for field
-            uploads. Contact your ASC Spatial administrator to request technician
-            access.
+            uploads. Contact your ASC Spatial administrator to request
+            technician access.
           </Text>
         </View>
         <View style={styles.approvalCard}>
@@ -585,10 +813,7 @@ export default function ScanWorkspaceScreen() {
                 accessibilityState={{ selected }}
                 testID={`module-${type}`}
                 onPress={() => setModuleType(type)}
-                style={[
-                  styles.segment,
-                  selected && styles.segmentSelected,
-                ]}
+                style={[styles.segment, selected && styles.segmentSelected]}
               >
                 <Text
                   style={[
@@ -669,7 +894,8 @@ export default function ScanWorkspaceScreen() {
                 />
               </View>
               <Text style={styles.captureProgressText}>
-                Scanning · {captureMeshCount} mesh areas found · move slowly around the surface
+                Scanning · {captureMeshCount} mesh areas found · move slowly
+                around the surface
               </Text>
               <Pressable
                 accessibilityRole="button"
@@ -682,7 +908,9 @@ export default function ScanWorkspaceScreen() {
                 ]}
               >
                 <Feather name="check" size={16} color={colors.foreground} />
-                <Text style={styles.captureButtonText}>Finish and compress</Text>
+                <Text style={styles.captureButtonText}>
+                  Finish and compress
+                </Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
@@ -709,17 +937,24 @@ export default function ScanWorkspaceScreen() {
             <Pressable
               accessibilityRole="button"
               testID="start-lidar-capture"
-              disabled={upload.isPending || isPicking || !!pendingCapturePreview}
+              disabled={isQueueing || isPicking || !!pendingCapturePreview}
               onPress={() => void startLidarCapture()}
               style={({ pressed }) => [
                 styles.captureButton,
                 styles.captureStartButton,
                 pressed && styles.pressed,
-                (upload.isPending || isPicking || !!pendingCapturePreview) && styles.disabled,
+                (isQueueing || isPicking || !!pendingCapturePreview) &&
+                  styles.disabled,
               ]}
             >
-              <Feather name="crosshair" size={16} color={colors.primaryForeground} />
-              <Text style={styles.captureStartButtonText}>Start LiDAR scan</Text>
+              <Feather
+                name="crosshair"
+                size={16}
+                color={colors.primaryForeground}
+              />
+              <Text style={styles.captureStartButtonText}>
+                Start LiDAR scan
+              </Text>
             </Pressable>
           ) : lidarStatus?.supported &&
             (lidarStatus.cameraPermission === 'denied' ||
@@ -732,7 +967,9 @@ export default function ScanWorkspaceScreen() {
               style={styles.captureButton}
             >
               <Feather name="settings" size={16} color={colors.foreground} />
-              <Text style={styles.captureButtonText}>Open Settings for camera access</Text>
+              <Text style={styles.captureButtonText}>
+                Open Settings for camera access
+              </Text>
             </Pressable>
           ) : lidarStatus?.supported &&
             lidarStatus.cameraPermission !== 'authorized' ? (
@@ -763,7 +1000,7 @@ export default function ScanWorkspaceScreen() {
           testID="choose-scan-file"
           disabled={
             isPicking ||
-            upload.isPending ||
+            isQueueing ||
             capturePhase !== 'idle' ||
             !!pendingCapturePreview
           }
@@ -772,7 +1009,7 @@ export default function ScanWorkspaceScreen() {
             styles.filePicker,
             pressed && styles.pressed,
             (isPicking ||
-              upload.isPending ||
+              isQueueing ||
               capturePhase !== 'idle' ||
               !!pendingCapturePreview) &&
               styles.disabled,
@@ -821,19 +1058,81 @@ export default function ScanWorkspaceScreen() {
         {formError ? (
           <InlineNotice message={formError} tone="error" colors={colors} />
         ) : null}
-        {upload.isError && !formError ? (
-          <InlineNotice
-            message="Upload could not reach the service. Please retry when the connection is stable."
-            tone="error"
-            colors={colors}
-          />
-        ) : null}
         {lastUploadedId ? (
           <InlineNotice
             message={`Scan saved. Record ID: ${lastUploadedId}`}
             tone="success"
             colors={colors}
           />
+        ) : null}
+        {queueNotice ? (
+          <InlineNotice message={queueNotice} tone="success" colors={colors} />
+        ) : null}
+        {queueError ? (
+          <InlineNotice message={queueError} tone="error" colors={colors} />
+        ) : null}
+        {currentQueueItems.length > 0 ? (
+          <View style={styles.historyCard} testID="scan-upload-queue">
+            <Text style={styles.cardEyebrow}>
+              ON THIS DEVICE · UPLOAD STATUS
+            </Text>
+            {currentQueueItems.map((item) => {
+              const stateColor =
+                item.state === 'failed'
+                  ? colors.destructive
+                  : item.state === 'sent'
+                    ? colors.primary
+                    : colors.mutedForeground;
+              const stateIcon =
+                item.state === 'failed'
+                  ? 'alert-circle'
+                  : item.state === 'sent'
+                    ? 'check-circle'
+                    : item.state === 'uploading'
+                      ? 'upload-cloud'
+                      : 'clock';
+              return (
+                <View
+                  key={item.id}
+                  style={styles.record}
+                  testID={`queued-scan-${item.id}`}
+                >
+                  <View style={styles.recordIcon}>
+                    <Feather name={stateIcon} size={17} color={stateColor} />
+                  </View>
+                  <View style={styles.recordMain}>
+                    <Text style={styles.recordTitle} numberOfLines={1}>
+                      {item.vesselAssetName}
+                    </Text>
+                    <Text style={styles.recordMeta} numberOfLines={1}>
+                      {item.moduleType} · {item.fileName} ·{' '}
+                      {formatSize(item.fileSize)}
+                    </Text>
+                    <Text
+                      style={{
+                        color: stateColor,
+                        fontFamily: 'DMSans_500Medium',
+                        fontSize: 11,
+                      }}
+                    >
+                      {uploadQueueStatusLabel(item)}
+                    </Text>
+                  </View>
+                  {item.state === 'failed' && user?.id ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Retry upload for ${item.vesselAssetName}`}
+                      testID={`retry-upload-${item.id}`}
+                      onPress={() => void retryQueuedScan(item.id)}
+                      style={styles.retryButton}
+                    >
+                      <Text style={styles.retryText}>Retry</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              );
+            })}
+          </View>
         ) : null}
 
         <View style={styles.technicianLine}>
@@ -847,7 +1146,7 @@ export default function ScanWorkspaceScreen() {
           accessibilityRole="button"
           testID="upload-scan-button"
           disabled={
-            upload.isPending ||
+            isQueueing ||
             isPicking ||
             capturePhase !== 'idle' ||
             !!pendingCapturePreview
@@ -855,21 +1154,25 @@ export default function ScanWorkspaceScreen() {
           onPress={submitUpload}
           style={({ pressed }) => [
             styles.primaryButton,
-            (upload.isPending ||
+            (isQueueing ||
               isPicking ||
               capturePhase !== 'idle' ||
               !!pendingCapturePreview) &&
               styles.disabled,
-            pressed && !upload.isPending && capturePhase === 'idle' && styles.pressed,
+            pressed && !isQueueing && capturePhase === 'idle' && styles.pressed,
           ]}
         >
-          {upload.isPending ? (
+          {isQueueing ? (
             <ActivityIndicator color={colors.primaryForeground} size="small" />
           ) : (
-            <Feather name="arrow-up-right" size={18} color={colors.primaryForeground} />
+            <Feather
+              name="arrow-up-right"
+              size={18}
+              color={colors.primaryForeground}
+            />
           )}
           <Text style={styles.primaryButtonText}>
-            {upload.isPending ? 'Uploading scan…' : 'Upload scan'}
+            {isQueueing ? 'Saving scan on this device…' : 'Upload scan'}
           </Text>
         </Pressable>
         <Text style={styles.privacyNote}>
@@ -888,7 +1191,10 @@ export default function ScanWorkspaceScreen() {
           testID="refresh-scans"
           onPress={() => void scansQuery.refetch()}
           hitSlop={10}
-          style={({ pressed }) => [styles.refreshButton, pressed && styles.pressed]}
+          style={({ pressed }) => [
+            styles.refreshButton,
+            pressed && styles.pressed,
+          ]}
         >
           <Feather name="refresh-cw" size={16} color={colors.foreground} />
         </Pressable>
