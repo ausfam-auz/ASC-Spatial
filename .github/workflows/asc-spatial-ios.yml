@@ -1,0 +1,76 @@
+name: ASC Spatial iOS simulator build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "artifacts/asc-spatial-ios/**"
+      - "lib/api-client-react/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/asc-spatial-ios.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ios-simulator:
+    name: Compile iOS simulator app
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install iOS app dependencies
+        run: pnpm install --frozen-lockfile --filter "@workspace/asc-spatial-ios..."
+
+      - name: Generate the native iOS project
+        run: pnpm --filter @workspace/asc-spatial-ios exec expo prebuild --platform ios --no-install --clean
+
+      - name: Install CocoaPods
+        run: pod install
+        working-directory: artifacts/asc-spatial-ios/ios
+
+      - name: Compile for the iOS simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          ios_dir="artifacts/asc-spatial-ios/ios"
+          workspace="$(find "$ios_dir" -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+          if [[ -z "$workspace" ]]; then
+            echo "Expo prebuild did not create an Xcode workspace." >&2
+            exit 1
+          fi
+
+          scheme="$(xcodebuild -list -json -workspace "$workspace" \
+            | jq -r '.workspace.schemes[] | select(startswith("Pods-") | not)' \
+            | head -n 1)"
+          if [[ -z "$scheme" ]]; then
+            echo "Could not find the app scheme in $workspace." >&2
+            exit 1
+          fi
+
+          xcodebuild \
+            -workspace "$workspace" \
+            -scheme "$scheme" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath "$RUNNER_TEMP/asc-spatial-derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            build

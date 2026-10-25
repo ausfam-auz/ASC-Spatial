@@ -51,6 +51,18 @@ The Replit Expo Go preview remains useful for the non-LiDAR app screens and
 uploading existing `.ply` or `.obj` files. It cannot load the custom ARKit
 module or start a LiDAR scan.
 
+## Cloud iOS compile check
+
+The GitHub Actions workflow at `.github/workflows/asc-spatial-ios.yml` uses a
+hosted macOS runner to generate the native iOS project and compile the app for
+the iOS Simulator. It runs manually from the repository's **Actions** tab or
+when relevant iOS source files are pushed to `main`.
+
+This checks that the Swift module and iOS project compile. It is an unsigned
+simulator build, not an installable iPhone/iPad app, and it cannot verify the
+LiDAR sensor. Installing on a physical device still requires Apple signing and
+a LiDAR-equipped device.
+
 References:
 
 - [Replit native mobile apps](https://docs.replit.com/features/artifact-types/building-mobile-apps)
