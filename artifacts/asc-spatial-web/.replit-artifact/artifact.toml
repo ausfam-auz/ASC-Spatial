@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "ASC Spatial"
+description = "Browser-based field technician workspace for authenticated LiDAR scan uploads, operational metadata, and recent scan records, connected to the ASC Spatial API."
+version = "1.0.0"
+id = "artifacts/asc-spatial-web"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18621
+
+[services.development]
+run = "pnpm --filter @workspace/asc-spatial-web run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/asc-spatial-web", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/asc-spatial-web/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18621"
+BASE_PATH = "/"

@@ -1,0 +1,466 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: Auth
+    description: Browser and native mobile authentication endpoints.
+  - name: technician administration
+    description: Workspace administrator technician-access review.
+  - name: scans
+    description: Field technician scan uploads.
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /me:
+    get:
+      tags: [Auth]
+      operationId: getAccount
+      summary: Get local account permissions and session identity
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationSessionHeader"
+      responses:
+        "200":
+          description: Current authentication state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthUserEnvelope"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /admin/technicians:
+    get:
+      tags: [technician administration]
+      operationId: listTechnicians
+      summary: List workspace accounts for technician-access review
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Accounts and current technician-access state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TechnicianListResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Workspace administrator access required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /admin/technicians/{userId}:
+    patch:
+      tags: [technician administration]
+      operationId: updateTechnicianAccess
+      summary: Grant or revoke technician access for a workspace account
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TechnicianAccessUpdate"
+      responses:
+        "200":
+          description: Technician access was updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TechnicianAccount"
+        "400":
+          description: Invalid access update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Workspace administrator access required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Workspace account not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /admin/technicians/{userId}/access-history:
+    get:
+      tags: [technician administration]
+      operationId: getTechnicianAccessHistory
+      summary: List technician-access decisions for a workspace account
+      description: Returns access changes newest first. Requires workspace administrator access.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Technician access history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TechnicianAccessHistoryResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Workspace administrator access required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Workspace account not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Technician access history is temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/scan/upload:
+    post:
+      tags: [scans]
+      operationId: uploadScan
+      summary: Upload a field scan and its operational metadata
+      description: Accepts one .ply or .obj file up to 100 MB and operational metadata as multipart form fields.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/ScanUploadRequest"
+      responses:
+        "200":
+          description: Scan stored successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanUploadResponse"
+        "400":
+          description: Invalid file or scan metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Technician is not approved or the technician ID does not match the authenticated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Technician exceeded the scan upload rate limit.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until the upload window resets.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413":
+          description: File exceeds the 100 MB limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Storage service unavailable or upload timed out.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /v1/scans:
+    get:
+      tags: [scans]
+      operationId: listScans
+      summary: List recent scans belonging to the authenticated technician
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Recent scans for the current technician.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanListResponse"
+        "401":
+          description: Missing or invalid session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Technician account is not approved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "503":
+          description: Database service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __session
+  parameters:
+    AuthorizationSessionHeader:
+      name: Authorization
+      in: header
+      required: false
+      description: Native clients only. Clerk session token in the form `Bearer <token>`; web clients use cookies.
+      schema:
+        type: string
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    AuthUser:
+      type: object
+      required: [id, email, firstName, lastName, profileImageUrl, isTechnician, isAdmin]
+      properties:
+        id:
+          type: string
+        email:
+          type: [string, "null"]
+          format: email
+        firstName:
+          type: [string, "null"]
+        lastName:
+          type: [string, "null"]
+        profileImageUrl:
+          type: [string, "null"]
+        isTechnician:
+          type: boolean
+        isAdmin:
+          type: boolean
+    TechnicianAccount:
+      type: object
+      required: [id, email, firstName, lastName, isTechnician, createdAt]
+      properties:
+        id:
+          type: string
+        email:
+          type: [string, "null"]
+          format: email
+        firstName:
+          type: [string, "null"]
+        lastName:
+          type: [string, "null"]
+        isTechnician:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    TechnicianListResponse:
+      type: object
+      required: [accounts]
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/TechnicianAccount"
+    TechnicianAccessUpdate:
+      type: object
+      required: [isTechnician]
+      properties:
+        isTechnician:
+          type: boolean
+    TechnicianAccessActor:
+      type: object
+      required: [id, email, firstName, lastName]
+      properties:
+        id:
+          type: string
+        email:
+          type: [string, "null"]
+          format: email
+        firstName:
+          type: [string, "null"]
+        lastName:
+          type: [string, "null"]
+    TechnicianAccessHistoryEntry:
+      type: object
+      required: [id, previousIsTechnician, isTechnician, changedAt, changedBy]
+      properties:
+        id:
+          type: string
+          format: uuid
+        previousIsTechnician:
+          type: boolean
+        isTechnician:
+          type: boolean
+        changedAt:
+          type: string
+          format: date-time
+        changedBy:
+          $ref: "#/components/schemas/TechnicianAccessActor"
+    TechnicianAccessHistoryResponse:
+      type: object
+      required: [technicianId, events]
+      properties:
+        technicianId:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/TechnicianAccessHistoryEntry"
+    AuthUserEnvelope:
+      type: object
+      required: [user]
+      properties:
+        user:
+          oneOf:
+            - $ref: "#/components/schemas/AuthUser"
+            - type: "null"
+    ScanUploadRequest:
+      type: object
+      required: [moduleType, technicianId, timestamp, vesselAssetName, file]
+      properties:
+        moduleType:
+          type: string
+          enum: [DeckOps, ToolingAudit]
+        technicianId:
+          type: string
+          minLength: 1
+        timestamp:
+          type: string
+          format: date-time
+        vesselAssetName:
+          type: string
+          minLength: 1
+          maxLength: 255
+        file:
+          type: string
+          format: binary
+    ScanUploadResponse:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+    ScanListResponse:
+      type: object
+      required: [scans]
+      properties:
+        scans:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScanSummary"
+    ScanSummary:
+      type: object
+      required:
+        [id, moduleType, technicianId, timestamp, vesselAssetName, fileName, fileSize, uploadedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        moduleType:
+          type: string
+          enum: [DeckOps, ToolingAudit]
+        technicianId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        vesselAssetName:
+          type: string
+        fileName:
+          type: string
+        fileSize:
+          type: integer
+          minimum: 0
+        uploadedAt:
+          type: string
+          format: date-time
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+

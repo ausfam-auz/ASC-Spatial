@@ -1,0 +1,24 @@
+kind = "mobile"
+previewPath = "/mobile/"
+title = "ASC Spatial iOS"
+description = "A native field-technician companion for selecting compressed LiDAR scan files, entering inspection metadata, signing in, and uploading scans to the ASC Spatial API."
+version = "1.0.0"
+id = "artifacts/asc-spatial-ios"
+router = "expo-domain"
+
+[[services]]
+name = "expo"
+ensurePreviewReachable = "/status"
+paths = [ "/mobile/" ]
+localPort = 21073
+
+[services.development]
+run = "pnpm --filter @workspace/asc-spatial-ios run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/asc-spatial-ios", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/asc-spatial-ios", "run", "serve" ]
+
+[services.env]
+PORT = "21073"
+BASE_PATH = "/mobile/"
