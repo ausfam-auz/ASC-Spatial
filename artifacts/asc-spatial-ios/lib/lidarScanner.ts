@@ -16,8 +16,9 @@ export interface LidarDeviceStatus {
 }
 
 export interface CaptureProgressEvent {
-  progress: number;
   meshCount: number;
+  vertexCount: number;
+  faceCount: number;
   elapsedSeconds: number;
 }
 

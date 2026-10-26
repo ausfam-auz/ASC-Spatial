@@ -220,10 +220,16 @@ public final class AscLidarModule: Module {
     if currentTime - lastProgressEventTime >= 0.35 {
       lastProgressEventTime = currentTime
       let elapsed = now.timeIntervalSince(captureStartedAt ?? now)
-      let progress = min(0.92, 0.02 + Double(meshAnchors.count) / 120.0)
+      let vertexCount = meshAnchors.values.reduce(0) {
+        $0 + $1.geometry.vertices.count
+      }
+      let faceCount = meshAnchors.values.reduce(0) {
+        $0 + $1.geometry.faces.count
+      }
       event = [
-        "progress": progress,
         "meshCount": meshAnchors.count,
+        "vertexCount": vertexCount,
+        "faceCount": faceCount,
         "elapsedSeconds": elapsed,
       ]
     }

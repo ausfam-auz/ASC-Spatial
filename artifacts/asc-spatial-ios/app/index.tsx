@@ -239,7 +239,12 @@ export default function ScanWorkspaceScreen() {
     useState<ScanProcessingOptions>(CUSTOM_SCAN_OPTIONS);
   const [captureProgress, setCaptureProgress] = useState(0);
   const [captureMeshCount, setCaptureMeshCount] = useState(0);
+  const [captureFaceCount, setCaptureFaceCount] = useState(0);
+  const [captureFaceIdleSeconds, setCaptureFaceIdleSeconds] = useState(0);
   const [compressionStage, setCompressionStage] = useState('');
+  const captureStartedAtRef = useRef(0);
+  const lastCaptureFaceCountRef = useRef(0);
+  const lastCaptureFaceChangeAtRef = useRef(0);
 
   useEffect(() => {
     try {
@@ -253,8 +258,12 @@ export default function ScanWorkspaceScreen() {
       });
     }
     const captureSubscription = lidarScanner.onCaptureProgress((event) => {
-      setCaptureProgress(event.progress);
+      if (event.faceCount !== lastCaptureFaceCountRef.current) {
+        lastCaptureFaceCountRef.current = event.faceCount;
+        lastCaptureFaceChangeAtRef.current = Date.now();
+      }
       setCaptureMeshCount(event.meshCount);
+      setCaptureFaceCount(event.faceCount);
     });
     const compressionSubscription = lidarScanner.onCompressionProgress(
       (event) => {
@@ -279,6 +288,20 @@ export default function ScanWorkspaceScreen() {
       appStateSubscription.remove();
     };
   }, []);
+
+  useEffect(() => {
+    if (capturePhase !== 'capturing') return;
+    const timer = setInterval(() => {
+      const lastChangeAt =
+        lastCaptureFaceChangeAtRef.current || captureStartedAtRef.current;
+      if (lastChangeAt > 0) {
+        setCaptureFaceIdleSeconds(
+          Math.floor((Date.now() - lastChangeAt) / 1_000),
+        );
+      }
+    }, 1_000);
+    return () => clearInterval(timer);
+  }, [capturePhase]);
 
   useEffect(
     () => () => {
@@ -492,6 +515,11 @@ export default function ScanWorkspaceScreen() {
     setSelectedFile(null);
     setCaptureProgress(0.02);
     setCaptureMeshCount(0);
+    setCaptureFaceCount(0);
+    setCaptureFaceIdleSeconds(0);
+    captureStartedAtRef.current = Date.now();
+    lastCaptureFaceCountRef.current = 0;
+    lastCaptureFaceChangeAtRef.current = captureStartedAtRef.current;
     setCapturePaused(false);
     setProcessingMode('default');
     setScanProcessingOptions(CUSTOM_SCAN_OPTIONS);
@@ -1102,7 +1130,19 @@ export default function ScanWorkspaceScreen() {
   }
 
   if (capturePhase === 'capturing') {
-    const progressPercent = Math.round(captureProgress * 100);
+    const noRecentMesh = captureFaceIdleSeconds >= 6;
+    const captureHint =
+      captureFaceCount > 0
+        ? noRecentMesh
+          ? `No new triangles for ${captureFaceIdleSeconds}s. Turn toward an unseen side or adjust your distance.`
+          : 'Surface mesh detected. Move to a new angle to capture uncovered sides.'
+        : captureMeshCount > 0
+          ? noRecentMesh
+            ? 'ARKit found mesh areas but has not added triangles. Improve lighting and point at a solid surface.'
+            : 'Mesh areas are detected, but no triangles yet. Keep the object well lit and in view.'
+          : noRecentMesh
+            ? 'No 3D triangles yet. Improve lighting, hold the subject in view, and change angle slowly.'
+            : 'Waiting for LiDAR surfaces. Keep the object well lit and move slowly.';
     return (
       <View
         style={[
@@ -1134,7 +1174,7 @@ export default function ScanWorkspaceScreen() {
           </Text>
           </View>
           <Text style={styles.captureFullscreenSurfaceCount}>
-            {captureMeshCount} surfaces
+            {captureMeshCount} mesh areas
           </Text>
         </View>
 
@@ -1146,11 +1186,13 @@ export default function ScanWorkspaceScreen() {
           <View pointerEvents="none" style={styles.captureFullscreenHud}>
             <View style={styles.lidarPreviewBadge}>
               <Text style={styles.lidarPreviewBadgeText}>
-                GREEN MESH · CAPTURED AREA
+                {captureFaceCount > 0
+                  ? 'LIVE MESH · TRIANGLES CAPTURED'
+                  : 'LIVE CAMERA · WAITING FOR MESH'}
               </Text>
             </View>
             <Text style={styles.captureFullscreenHint}>
-              Move slowly around the object to capture the surfaces you need.
+              {captureHint}
             </Text>
           </View>
         </View>
@@ -1158,22 +1200,17 @@ export default function ScanWorkspaceScreen() {
         <View style={styles.captureFullscreenControls}>
           <View style={styles.captureFullscreenProgressLabel}>
             <Text style={styles.captureFullscreenProgressTitle}>
-              Scan coverage
+              Captured mesh
             </Text>
             <Text style={styles.captureFullscreenProgressValue}>
-              {progressPercent}%
+              {captureFaceCount.toLocaleString()} triangles
             </Text>
           </View>
-          <View style={styles.captureProgressTrack}>
-            <View
-              style={[
-                styles.captureProgressFill,
-                { width: `${progressPercent}%` },
-              ]}
-            />
-          </View>
           <Text style={styles.captureProgressText}>
-            {captureMeshCount} mesh areas found · move slowly
+            {captureMeshCount} areas ·{' '}
+            {captureFaceCount > 0
+              ? `${captureFaceCount.toLocaleString()} triangles`
+              : 'no triangles yet'}
           </Text>
           <View style={styles.captureFullscreenFooter}>
             <Pressable
